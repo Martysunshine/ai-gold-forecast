@@ -9,10 +9,11 @@ import { ForecastPanel } from "./components/ForecastPanel";
 import { Backtest } from "./components/Backtest";
 import { MarketContext } from "./components/MarketContext";
 import { Methodology } from "./components/Methodology";
+import { GldComparison } from "./components/GldComparison";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong.");
-type Tab = "backtest" | "context" | "method";
-const TABS: { id: Tab; label: string }[] = [{ id: "backtest", label: "Backtest" }, { id: "context", label: "Market Context" }, { id: "method", label: "Methodology" }];
+type Tab = "backtest" | "context" | "gld" | "method";
+const TABS: { id: Tab; label: string }[] = [{ id: "backtest", label: "Backtest" }, { id: "context", label: "Market Context" }, { id: "gld", label: "GLD Comparison" }, { id: "method", label: "Methodology" }];
 
 export default function App() {
   const [prices, setPrices] = useState<PricePayload | null>(null);
@@ -135,6 +136,7 @@ export default function App() {
             <div className="tabpanel" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
               {tab === "backtest" && <Backtest result={result} horizon={horizon} />}
               {tab === "context" && <MarketContext news={news} loading={newsLoading} error={newsErr} onRetry={() => loadNews(true)} />}
+              {tab === "gld" && <GldComparison />}
               {tab === "method" && prices && <Methodology prices={prices} result={result} />}
             </div>
           </section>

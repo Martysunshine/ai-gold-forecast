@@ -4,7 +4,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+REPO_DIR = BASE_DIR.parent
+# Optional local settings and secrets. .env is git-ignored; real environment variables take precedence.
+load_dotenv(REPO_DIR / ".env", override=False)
 DATA_DIR = Path(os.getenv("GOLD_DATA_DIR", BASE_DIR / "data"))
 
 SYMBOL = os.getenv("GOLD_SYMBOL", "GC=F")
@@ -20,3 +25,9 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MIN_ROWS = 500  # minimum daily observations for features + validation/calibration/holdout periods
 MAX_ABS_DAILY_MOVE = 0.30  # a >30% one-day move in gold is treated as a data error
 HORIZONS = (1, 5, 20)
+
+# Optional: Alpaca market data for the GLD ETF comparison view (read-only; never a model input).
+# Keys stay on the server: they are never returned by the API, logged, or included in error messages.
+ALPACA_KEY_ID = os.getenv("ALPACA_API_KEY_ID", "").strip()
+ALPACA_SECRET_KEY = os.getenv("ALPACA_API_SECRET_KEY", "").strip()
+ALPACA_DATA_FEED = (os.getenv("ALPACA_DATA_FEED", "iex").strip() or "iex").lower()

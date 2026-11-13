@@ -75,3 +75,25 @@ export interface NewsPayload {
   source: string;
   method?: string;
 }
+
+export interface GldComparison {
+  configured: boolean;
+  note: string;
+  setup?: string[];
+  instrument?: Instrument;
+  source?: string;
+  fetched_at?: string;
+  age_minutes?: number;
+  provider_error?: string | null;
+  status?: { mode: "live" | "cached"; label: string };
+  latest?: { date: string; close: number; change_pct: number };
+  count?: number;
+  gold_source?: string;
+  comparison?: {
+    common_dates: number;
+    start: string;
+    end: string;
+    indexed: { date: string; gc: number; gld: number }[];
+    window: { sessions: number; start: string; end: string; return_correlation: number; gc_return_pct: number; gld_return_pct: number };
+  };
+}

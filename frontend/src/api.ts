@@ -1,4 +1,4 @@
-import type { Horizon, NewsPayload, Prediction, PricePayload } from "./types";
+import type { GldComparison, Horizon, NewsPayload, Prediction, PricePayload } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -38,6 +38,7 @@ export const api = {
     return request<PricePayload>("/api/prices/upload", { method: "POST", body });
   },
   predict: (h: Horizon) => request<Prediction>(`/api/predict?horizon=${h}`),
+  gld: (refresh = false) => request<GldComparison>(`/api/compare/gld${refresh ? "?refresh=true" : ""}`),
   news: (refresh = false) => request<NewsPayload>(`/api/news${refresh ? "?refresh=true" : ""}`),
   downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,
 };

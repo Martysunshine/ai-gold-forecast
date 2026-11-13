@@ -12,7 +12,7 @@ A single workspace for one instrument, COMEX gold futures (`GC=F`).
 
 1. **Market strip.** Latest completed close, session change, observation date and 20-session realised volatility. Each metric has a definition on hover or keyboard focus.
 2. **Chart and forecast configuration.** Choose a horizon (1, 5 or 20 sessions) and run the forecast. The chart marks the forecast origin, draws a straight connector to the target session, and shades the target range at that session only. The connector is not a modelled daily path. A status line states whether the displayed result matches the selected horizon and the current data.
-3. **Research tabs.** *Backtest* shows actual vs predicted prices on the held-out test period, a comparison against an unchanged-price baseline, evaluation dates, MAE and the measured coverage of the range. *Market Context* lists recent gold headlines with sources and links; news is context and is not an input to the forecast. *Methodology* summarises the data, features, evaluation, calendar and uncertainty handling.
+3. **Research tabs.** *Backtest* shows actual vs predicted prices on the held-out test period, a comparison against an unchanged-price baseline, evaluation dates, MAE and the measured coverage of the range. *Market Context* lists recent gold headlines with sources and links; news is context and is not an input to the forecast. *GLD Comparison* (optional, needs Alpaca keys) sets the GLD gold ETF beside the futures. *Methodology* summarises the data, features, evaluation, calendar and uncertainty handling.
 4. **Data controls.** Refresh, CSV upload, "Use live data" (to leave an uploaded file), and a CSV export of the displayed forecast.
 
 The layout stacks at narrow widths; it was checked at 390, 768 and 1440 px ([768](docs/screenshots/workspace-768.png), [390](docs/screenshots/workspace-390.png)).
@@ -32,6 +32,17 @@ PORT=9000 ./start.sh          # use another port
 GOLD_OFFLINE=1 ./start.sh     # never call external providers: cached data or CSV upload only
 ```
 
+### Optional: GLD comparison via Alpaca
+
+Alpaca does not carry gold futures, so it is used for one read-only purpose: daily bars of the GLD gold ETF, shown in the *GLD Comparison* tab next to `GC=F` (both indexed to 100, with the correlation of daily returns). GLD is a different instrument (an ETF priced per share) and is never a model input; no order or account endpoints are called.
+
+```bash
+cp .env.example .env    # then set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper or market-data keys)
+./start.sh
+```
+
+`ALPACA_DATA_FEED=iex` works on the free plan. Keys are read on the server only and never appear in the interface, API responses, logs or error messages. Without keys the tab shows these setup steps and everything else works unchanged.
+
 Development with hot reload: run `.venv/bin/uvicorn app.main:app --port 8742` in `backend/`, and `npm run dev` in `frontend/`, then open http://localhost:5183 (it proxies `/api` to port 8742). Optional settings are listed in [`.env.example`](.env.example).
 
 ## System design
@@ -46,6 +57,7 @@ flowchart LR
   S["Session calendar<br/>CME Globex gold, minus US holidays"] --> M
   M --> A["FastAPI<br/>/api/*"]
   N["Google News RSS"] --> A
+  G["Alpaca market data<br/>GLD ETF, optional"] --> A
   A --> W["React + TypeScript workspace<br/>Recharts"]
 ```
 
@@ -106,23 +118,24 @@ Reading the table:
 | `GET /api/predict?horizon=1\|5\|20` | Forecast, range, backtest series and metrics for the active data. Results carry the `data_key` they were computed from. |
 | `GET /api/predict/download?horizon=…&key=…` | CSV of the forecast; `409` if the active data no longer matches `key`. |
 | `GET /api/news[?refresh=true]` | Recent gold headlines with sources, dates and keyword themes. |
+| `GET /api/compare/gld[?refresh=true]` | Optional GLD ETF comparison from Alpaca market data; `{"configured": false}` with setup steps when no keys are set. |
 
 ## Verification
 
 ```bash
-cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 68 tests
+cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 83 tests
 cd frontend && npm run build                                                                    # type-check + production build
-./e2e/run.sh                                                                                    # 57 browser checks (needs Chrome and internet)
+./e2e/run.sh                                                                                    # 62 browser checks (needs Chrome and internet)
 ```
 
-- **Backend tests** cover upload and provider validation, DST-correct dates, the session calendar, feature causality, purging, validation results and range calibration not depending on test-period prices, consistency of all three horizons, export parity with the API, stale-data rejection, caching, cache and outage fallbacks, upload safety and the return to provider data.
-- **Browser checks** (`e2e/`, Chrome via `playwright-core`) run against the production build served by FastAPI: the full forecast workflow at 1440 px, export values against the displayed forecast, refresh, valid and invalid CSV upload, provider failure with and without a cache, a news outage, keyboard operation, and layout, overflow, touch-target and contrast checks at 1440, 768 and 390 px.
+- **Backend tests** cover upload and provider validation, DST-correct dates, the session calendar, feature causality, purging, validation results and range calibration not depending on test-period prices, consistency of all three horizons, export parity with the API, stale-data rejection, caching, cache and outage fallbacks, upload safety, the return to provider data, and the Alpaca client (pagination, dates, error mapping, cache, and that key values never appear in any response).
+- **Browser checks** (`e2e/`, Chrome via `playwright-core`) run against the production build served by FastAPI: the full forecast workflow at 1440 px, export values against the displayed forecast, refresh, valid and invalid CSV upload, provider failure with and without a cache, a news outage, the GLD tab without keys and (with a mocked API response) with keys, keyboard operation, and layout, overflow, touch-target and contrast checks at 1440, 768 and 390 px.
 
 ## Project structure
 
 | Path | Contents |
 |---|---|
-| `backend/app/` | `data.py` ingestion, validation and cache; `features.py`; `model.py` models and evaluation; `sessions.py` calendar; `news.py`; `main.py` API. |
+| `backend/app/` | `data.py` ingestion, validation and cache; `features.py`; `model.py` models and evaluation; `sessions.py` calendar; `news.py`; `alpaca.py` optional GLD data; `main.py` API. |
 | `backend/tests/` | pytest suite. |
 | `frontend/src/` | `App.tsx` state and layout; `components/` market strip, chart, forecast panel, research tabs; `styles.css`. |
 | `e2e/` | Browser end-to-end checks and the runner. |

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import alpaca, config
 from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
@@ -23,6 +23,7 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_meth
 
 store = DataStore()
 news_service = NewsService()
+gld_store = alpaca.GldStore()
 _forecast_cache: dict[str, dict] = {}
 _forecast_lock = threading.Lock()
 
@@ -196,6 +197,45 @@ def download_prediction(horizon: int = 5, key: str | None = None):
     w.writerow(export_row(r, (ds.meta.get("instrument") or {}).get("name", ""), ds.meta.get("source", "")))
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="gold-forecast-{r["horizon"]}-sessions-{r["base_date"]}.csv"'})
+
+
+GLD_SETUP = [
+    "Create a free Alpaca account and generate paper-trading or market-data API keys.",
+    "Copy .env.example to .env in the repository root and set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY.",
+    "Restart ./start.sh. Only market data is read; no orders are placed.",
+]
+GLD_NOTE = "GLD is an exchange-traded fund, not the futures contract. Shown for comparison only; not used by the forecast."
+
+
+@app.get("/api/compare/gld")
+def compare_gld(refresh: bool = False):
+    if not alpaca.configured():
+        return {"configured": False, "setup": GLD_SETUP, "note": GLD_NOTE}
+    try:
+        g = gld_store.get(force=refresh)
+    except alpaca.AlpacaError as exc:
+        raise _err(502, "alpaca_error", str(exc)) from exc
+    ds = _dataset()
+    try:
+        comparison = alpaca.compare(ds.series, g.series)
+    except alpaca.AlpacaError as exc:
+        raise _err(422, "no_overlap", str(exc)) from exc
+    last_date, prev = g.series.index[-1], float(g.series.iloc[-2])
+    age_min = max(0.0, (datetime.now(timezone.utc).timestamp() - g.meta.get("fetched_at_epoch", 0)) / 60)
+    return {
+        "configured": True,
+        "note": GLD_NOTE,
+        "instrument": alpaca.INSTRUMENT,
+        "source": f"Alpaca market data ({g.meta.get('feed', config.ALPACA_DATA_FEED)} feed)",
+        "fetched_at": g.meta.get("fetched_at"),
+        "age_minutes": round(age_min, 1),
+        "provider_error": g.meta.get("provider_error"),
+        "status": {"mode": "cached", "label": "Cached (refresh failed)"} if g.meta.get("provider_error") else {"mode": "live", "label": "Live"},
+        "latest": {"date": last_date.date().isoformat(), "close": float(g.series.iloc[-1]), "change_pct": (float(g.series.iloc[-1]) / prev - 1) * 100},
+        "count": int(len(g.series)),
+        "gold_source": ds.meta.get("source"),
+        "comparison": comparison,
+    }
 
 
 @app.get("/api/news")
