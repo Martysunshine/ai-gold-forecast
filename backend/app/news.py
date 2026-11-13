@@ -45,6 +45,16 @@ THEMES = {
 }
 
 
+# General background, written by the project authors. NOT extracted from the articles and NOT a prediction.
+BACKGROUND = {
+    "rates": "Gold pays no interest, so higher interest rates and Treasury yields tend to make it less attractive, while expected rate cuts tend to support it.",
+    "dollar": "Gold is priced in US dollars. A stronger dollar usually makes it costlier for buyers using other currencies and tends to weigh on the price; a weaker dollar tends to help.",
+    "inflation": "Gold is often held as an inflation hedge, but high inflation can also lead central banks to raise rates, so the net effect varies.",
+    "geopolitics": "Conflict, tariffs and political uncertainty can raise demand for gold as a safe-haven asset.",
+    "central_banks": "Central-bank purchases add to physical demand and have supported prices in recent years; slower buying or sales would remove that support.",
+}
+
+
 def _parse_feed(xml_bytes: bytes) -> list[dict]:
     root = ET.fromstring(xml_bytes)
     items = []
@@ -107,9 +117,10 @@ def build_digest(items: list[dict], now: datetime | None = None) -> dict:
         {
             "id": k,
             "label": THEMES[k][0],
+            "background": BACKGROUND[k],
             "count": len(v),
             "share_pct": round(100 * len(v) / len(out_items), 0) if out_items else 0,
-            "examples": [{"title": r["title"], "link": r["link"], "source": r["source"]} for r in v[:2]],
+            "examples": [{"title": r["title"], "link": r["link"], "source": r["source"], "published": r["published"]} for r in v[:2]],
         }
         for k, v in theme_hits.items()
     ]
@@ -167,7 +178,7 @@ class NewsService:
                 errors=errors,
                 fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 source="Google News RSS",
-                method="Headlines are filtered for the words gold/bullion/XAU, de-duplicated and tagged by keyword. This is context only and is not used by the forecast model.",
+                method="Headlines are filtered for the words gold/bullion/XAU, de-duplicated and tagged by keyword. This is context only and is not used by the prediction model.",
             )
             self._cache, self._cache_at = digest, now
             return digest

@@ -1,271 +1,200 @@
-"""Ridge-regression forecaster with purged chronological walk-forward validation.
+"""Gold price prediction: Ridge vs Random Forest vs an unchanged-price baseline.
 
-Approach (deliberately simple):
-  * One Ridge model per horizon (1, 5, 20 sessions) predicting the forward *log return*.
-  * Pipeline = StandardScaler -> Ridge. Inside every validation fold the scaler is fitted on
-    the training rows only.
-  * Walk-forward: expanding training window, consecutive test blocks, training rows whose
-    target window reaches the first test date are purged.
-  * Baseline: "price stays unchanged" (predicted return = 0).
-  * Uncertainty: empirical 10th/90th percentiles of out-of-sample residuals (an 80% range).
+Protocol (one chronological split per horizon, nothing fancy):
+
+    |------- train (60%) -------|-- validation (20%) --|-- test (20%, untouched) --|
+
+  * Both models are fitted on *train* and compared on *validation*. The one with the lower
+    validation MAE becomes the default model. The test period plays no part in that choice.
+  * The 80% range is built from the default model's *validation* residuals.
+  * The test period is then scored once: models are refitted on everything before it and
+    predict it. Test MAE, directional accuracy and the observed coverage of the range are reported.
+  * Purging: a sample at date t has a target spanning (t, t+h]. A training/validation sample is
+    only used for a split if t+h falls strictly before the first date of the next period, so no
+    target window reaches into a later period.
+  * Features at date t use prices up to t only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from . import config
-from .features import FEATURE_LABELS, FEATURE_NAMES, WARMUP, build_features, build_target
+from .features import FEATURE_LABELS, FEATURE_NAMES, build_features, build_target
 
-RIDGE_ALPHA = 100.0  # fixed a priori (strong shrinkage; weak-signal problem). Not tuned on test data.
-TEST_BLOCK = 63  # ~one quarter of trading sessions per validation fold
-MAX_MIN_TRAIN = 504  # ~two years of sessions before the first validation fold
+TRAIN_FRAC, VAL_FRAC = 0.6, 0.2
 INTERVAL_LEVEL = 0.80
-MIN_FOLDS = 2
-# Verdict thresholds (fixed in advance, documented in the README):
-MATERIAL_IMPROVEMENT = 0.02  # model MAE must be >=2% lower than the baseline to count as "beats"
+MATERIAL_IMPROVEMENT = 0.02  # "advantage" needs a >=2% lower test MAE than the unchanged baseline
+MIN_SAMPLES = 300
+
+LABELS = {"ridge": "Ridge regression", "random_forest": "Random Forest", "unchanged": "Unchanged price"}
 
 
 class ModelError(Exception):
     pass
 
 
-def make_pipeline() -> Pipeline:
-    return Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=RIDGE_ALPHA))])
+def make_model(name: str):
+    if name == "ridge":
+        return Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=100.0))])
+    if name == "random_forest":
+        return RandomForestRegressor(n_estimators=200, max_depth=4, min_samples_leaf=20, max_features=0.5, random_state=0, n_jobs=-1)
+    raise ValueError(name)
 
 
-def purged_walk_forward_splits(n: int, horizon: int, min_train: int, test_size: int = TEST_BLOCK):
-    """Yield ``(train_idx, test_idx)`` positional index arrays over ``n`` time-ordered samples.
-
-    Sample ``k`` has a target that spans positions ``(k, k + horizon]``. For a test block starting at
-    ``a`` a training sample is kept only if ``k + horizon < a``, i.e. its whole target window ends
-    before the first test date. Samples ``a - horizon .. a - 1`` are purged.
-    """
-    starts = []
-    a = min_train
-    while a < n:
-        starts.append(a)
-        a += test_size
-    # A very short trailing block is merged into the previous one rather than evaluated alone.
-    blocks = []
-    for i, a in enumerate(starts):
-        b = starts[i + 1] if i + 1 < len(starts) else n
-        blocks.append((a, b))
-    if len(blocks) >= 2 and blocks[-1][1] - blocks[-1][0] < test_size // 3:
-        last = blocks.pop()
-        blocks[-1] = (blocks[-1][0], last[1])
-    for a, b in blocks:
-        train_end = a - horizon  # exclusive: k <= a - horizon - 1
-        if train_end <= 0:
-            continue
-        yield np.arange(0, train_end), np.arange(a, b)
+def _mae(pred_price: np.ndarray, actual: np.ndarray) -> float:
+    return float(np.mean(np.abs(pred_price - actual)))
 
 
-@dataclass
-class _Labelled:
-    X: pd.DataFrame
-    y: pd.Series
-    price0: pd.Series
-    price_h: pd.Series
+def _direction(pred_ret: np.ndarray, actual_ret: np.ndarray) -> float:
+    moved = actual_ret != 0
+    return float(np.mean(np.sign(pred_ret[moved]) == np.sign(actual_ret[moved])) * 100)
 
 
-def _labelled(close: pd.Series, horizon: int) -> _Labelled:
-    X = build_features(close).dropna()
-    y = build_target(close, horizon).reindex(X.index)
-    keep = y.notna()
-    X, y = X[keep], y[keep]
-    price0 = close.reindex(X.index)
-    price_h = close.shift(-horizon).reindex(X.index)
-    return _Labelled(X, y, price0, price_h)
-
-
-def walk_forward(close: pd.Series, horizon: int) -> pd.DataFrame:
-    """Out-of-sample predictions for one horizon. One row per evaluated forecast origin."""
-    data = _labelled(close, horizon)
-    n = len(data.X)
-    min_train = min(MAX_MIN_TRAIN, n // 2)
-    rows = []
-    for fold, (tr, te) in enumerate(purged_walk_forward_splits(n, horizon, min_train)):
-        pipe = make_pipeline().fit(data.X.iloc[tr].to_numpy(), data.y.iloc[tr].to_numpy())
-        pred = pipe.predict(data.X.iloc[te].to_numpy())
-        rows.append(
-            pd.DataFrame(
-                {
-                    "fold": fold,
-                    "price0": data.price0.iloc[te].to_numpy(),
-                    "price_actual": data.price_h.iloc[te].to_numpy(),
-                    "ret_actual": data.y.iloc[te].to_numpy(),
-                    "ret_pred": pred,
-                    "train_end_pos": tr[-1],
-                },
-                index=data.X.index[te],
-            )
-        )
-    if len(rows) < MIN_FOLDS:
-        raise ModelError(
-            f"Not enough history for walk-forward validation at horizon {horizon} "
-            f"({n} labelled samples; need roughly {2 * min_train + MIN_FOLDS * TEST_BLOCK})."
-        )
-    oos = pd.concat(rows)
-    oos["price_pred"] = oos["price0"] * np.exp(oos["ret_pred"])
-    oos["price_base"] = oos["price0"]
-    return oos
-
-
-def summarise_oos(oos: pd.DataFrame, horizon: int) -> dict:
-    err_model = (oos["price_pred"] - oos["price_actual"]).abs()
-    err_base = (oos["price_base"] - oos["price_actual"]).abs()
-    mae_m, mae_b = float(err_model.mean()), float(err_base.mean())
-    improvement = 1.0 - mae_m / mae_b if mae_b > 0 else 0.0
-
-    moved = oos["ret_actual"] != 0
-    hit = (np.sign(oos["ret_pred"]) == np.sign(oos["ret_actual"]))[moved]
-    always_up = (oos["ret_actual"] > 0)[moved]
-
-    per_fold = pd.DataFrame({"m": err_model, "b": err_base, "fold": oos["fold"]}).groupby("fold").mean()
-    folds_won = int((per_fold["m"] < per_fold["b"]).sum())
-    n_folds = int(len(per_fold))
-
-    if improvement >= MATERIAL_IMPROVEMENT and folds_won * 2 > n_folds:
-        verdict, label = "beats", "Beats baseline"
-    elif improvement < 0:
-        verdict, label = "worse", "Does not beat baseline"
-    else:
-        verdict, label = "inconclusive", "No reliable edge over baseline"
-
-    resid = oos["ret_actual"] - oos["ret_pred"]
-    lo_q, hi_q = (1 - INTERVAL_LEVEL) / 2, 1 - (1 - INTERVAL_LEVEL) / 2
-    return {
-        "horizon": horizon,
-        "n_predictions": int(len(oos)),
-        "n_folds": n_folds,
-        "test_start": oos.index[0].date().isoformat(),
-        "test_end": oos.index[-1].date().isoformat(),
-        "mae_model": mae_m,
-        "mae_baseline": mae_b,
-        "mae_improvement_pct": float(improvement * 100),
-        "folds_beating_baseline": folds_won,
-        "directional_accuracy": float(hit.mean() * 100),
-        "always_up_accuracy": float(always_up.mean() * 100),
-        "verdict": verdict,
-        "verdict_label": label,
-        "residual_std": float(resid.std(ddof=1)),
-        "residual_quantiles": {"low": float(resid.quantile(lo_q)), "high": float(resid.quantile(hi_q))},
-    }
-
-
-def _fmt_pct(x: float, digits: int = 1) -> str:
-    return f"{x * 100:+.{digits}f}%"
-
-
-def explain(pipe: Pipeline, x_last: pd.Series, horizon: int, top: int = 3) -> tuple[list[dict], float]:
-    """Per-feature contributions (coef x standardised value) to the forecast return, plus the drift term."""
-    scaler: StandardScaler = pipe.named_steps["scale"]
-    ridge: Ridge = pipe.named_steps["ridge"]
-    z = scaler.transform(x_last.to_numpy().reshape(1, -1))[0]
-    contrib = ridge.coef_ * z
-    order = np.argsort(-np.abs(contrib))[:top]
-    out = []
-    for j in order:
-        name = FEATURE_NAMES[j]
-        value = float(x_last.iloc[j])
-        zj = float(z[j])
-        level = "well above" if zj > 1 else "above" if zj > 0.25 else "well below" if zj < -1 else "below" if zj < -0.25 else "close to"
-        direction = "adds to" if contrib[j] > 0 else "subtracts from"
-        out.append(
-            {
-                "feature": name,
-                "label": FEATURE_LABELS[name],
-                "value": value,
-                "z_score": zj,
-                "contribution_pct": float(contrib[j] * 100),
-                "text": (
-                    f"{FEATURE_LABELS[name]} is {_fmt_pct(value, 2)}, {level} its usual level in the training window "
-                    f"(z = {zj:+.1f}); this {direction} the {horizon}-session forecast by {abs(contrib[j]) * 100:.2f} percentage points."
-                ),
-            }
-        )
-    return out, float(ridge.intercept_)
-
-
-def _target_date(last: pd.Timestamp, horizon: int) -> str:
+def target_date(last: pd.Timestamp, horizon: int) -> str:
     # Weekdays only; exchange holidays are not modelled, so the date is approximate.
     return pd.bdate_range(last + pd.Timedelta(days=1), periods=horizon)[-1].date().isoformat()
 
 
-def run_forecast(close: pd.Series, horizons=config.HORIZONS) -> dict:
+def split_positions(pos: np.ndarray, h: int, n: int):
+    """Indices (into the labelled-sample arrays) for train / validation / test, with purging.
+
+    ``pos`` holds each sample's integer position in the full price series.
+    """
+    v0, t0 = int(n * TRAIN_FRAC), int(n * (TRAIN_FRAC + VAL_FRAC))
+    train = np.where(pos + h < pos[v0])[0]  # target window ends before validation starts
+    val = np.arange(v0, t0)
+    val = val[pos[val] + h < pos[t0]]  # target window ends before test starts
+    fit_before_test = np.where(pos + h < pos[t0])[0]  # train + validation, purged at the test boundary
+    test = np.arange(t0, n)
+    return train, val, test, fit_before_test
+
+
+def run_prediction(close: pd.Series, h: int) -> dict:
     close = close.astype(float)
-    if len(close) < config.MIN_ROWS:
-        raise ModelError(f"Need at least {config.MIN_ROWS} observations; have {len(close)}.")
+    if h not in config.HORIZONS:
+        raise ModelError(f"Horizon must be one of {config.HORIZONS}.")
     feats = build_features(close)
     x_last = feats.iloc[-1]
     if x_last.isna().any():
         raise ModelError("Latest feature row is incomplete.")
+    X = feats.dropna()
+    y = build_target(close, h).reindex(X.index)
+    keep = y.notna()
+    X, y = X[keep], y[keep]
+    n = len(X)
+    if n < MIN_SAMPLES:
+        raise ModelError(f"Not enough history: {n} usable samples, need at least {MIN_SAMPLES}.")
+    pos = close.index.get_indexer(X.index)
+    price0 = close.reindex(X.index).to_numpy()
+    price_h = close.shift(-h).reindex(X.index).to_numpy()
+    Xv, yv = X.to_numpy(), y.to_numpy()
+    train, val, test, pre_test = split_positions(pos, h, n)
+    if min(len(train), len(val), len(test)) < 30:
+        raise ModelError("Not enough history to form train, validation and test periods.")
+
+    def price_of(idx, pred_ret):
+        return price0[idx] * np.exp(pred_ret)
+
+    # ---- 1) validation: choose the default model (test period not touched) ----------------------
+    val_pred, val_mae = {}, {}
+    for name in ("ridge", "random_forest"):
+        m = make_model(name).fit(Xv[train], yv[train])
+        val_pred[name] = m.predict(Xv[val])
+        val_mae[name] = _mae(price_of(val, val_pred[name]), price_h[val])
+    val_mae["unchanged"] = _mae(price0[val], price_h[val])
+    default = min(("ridge", "random_forest"), key=lambda k: val_mae[k])
+    resid = yv[val] - val_pred[default]
+    lo_q, hi_q = (1 - INTERVAL_LEVEL) / 2, 1 - (1 - INTERVAL_LEVEL) / 2
+    q_low, q_high = float(np.quantile(resid, lo_q)), float(np.quantile(resid, hi_q))
+
+    # ---- 2) test: score once --------------------------------------------------------------------
+    test_pred = {}
+    for name in ("ridge", "random_forest"):
+        m = make_model(name).fit(Xv[pre_test], yv[pre_test])
+        test_pred[name] = m.predict(Xv[test])
+    actual_ret = yv[test]
+    methods = {}
+    for name in ("ridge", "random_forest"):
+        methods[name] = {
+            "label": LABELS[name],
+            "mae": _mae(price_of(test, test_pred[name]), price_h[test]),
+            "directional_accuracy": _direction(test_pred[name], actual_ret),
+        }
+    methods["unchanged"] = {"label": LABELS["unchanged"], "mae": _mae(price0[test], price_h[test]), "directional_accuracy": None}
+    base_mae = methods["unchanged"]["mae"]
+    for k in ("ridge", "random_forest"):
+        methods[k]["vs_baseline_pct"] = float((methods[k]["mae"] / base_mae - 1) * 100)
+    d_mae = methods[default]["mae"]
+    advantage = d_mae <= (1 - MATERIAL_IMPROVEMENT) * base_mae
+    lo_r, hi_r = test_pred[default] + q_low, test_pred[default] + q_high
+    coverage = float(np.mean((actual_ret >= lo_r) & (actual_ret <= hi_r)) * 100)
+    width_usd = float(np.mean(price0[test] * (np.exp(hi_r) - np.exp(lo_r))))
+
+    test_series = [
+        {
+            "date": close.index[pos[i] + h].date().isoformat(),
+            "actual": round(float(price_h[i]), 2),
+            "predicted": round(float(price0[i] * np.exp(test_pred[default][j])), 2),
+            "baseline": round(float(price0[i]), 2),
+        }
+        for j, i in enumerate(test)
+    ]
+
+    # ---- 3) forecast: refit the default model on all labelled data -------------------------------
+    final = make_model(default).fit(Xv, yv)
+    pred = float(final.predict(x_last.to_numpy().reshape(1, -1))[0])
     last_date, last_price = close.index[-1], float(close.iloc[-1])
+    f_price = last_price * float(np.exp(pred))
+    low, high = last_price * float(np.exp(pred + q_low)), last_price * float(np.exp(pred + q_high))
 
-    forecasts, performance, signals = [], [], {}
-    for h in horizons:
-        oos = walk_forward(close, h)
-        perf = summarise_oos(oos, h)
-        performance.append(perf)
+    def span(idx):
+        return {"start": X.index[idx[0]].date().isoformat(), "end": X.index[idx[-1]].date().isoformat(), "n": int(len(idx))}
 
-        data = _labelled(close, h)  # every labelled row has a fully observed target (<= last date)
-        pipe = make_pipeline().fit(data.X.to_numpy(), data.y.to_numpy())
-        pred = float(pipe.predict(x_last.to_numpy().reshape(1, -1))[0])
-        q = perf["residual_quantiles"]
-        low_ret, high_ret = pred + q["low"], pred + q["high"]
-        drivers, drift = explain(pipe, x_last, h)
-        signals[str(h)] = {"drivers": drivers, "drift_pct": drift * 100}
-        forecasts.append(
-            {
-                "horizon": h,
-                "base_date": last_date.date().isoformat(),
-                "target_date": _target_date(last_date, h),
-                "base_price": last_price,
-                "predicted_return_pct": pred * 100,
-                "forecast_price": last_price * float(np.exp(pred)),
-                "expected_change_pct": (float(np.exp(pred)) - 1) * 100,
-                "interval": {
-                    "level": INTERVAL_LEVEL,
-                    "low": last_price * float(np.exp(low_ret)),
-                    "high": last_price * float(np.exp(high_ret)),
-                    "low_pct": (float(np.exp(low_ret)) - 1) * 100,
-                    "high_pct": (float(np.exp(high_ret)) - 1) * 100,
-                },
-                "residual_std_pct": perf["residual_std"] * 100,
-            }
-        )
-
-    vol20 = feats["vol_20"].dropna()
-    context = {
-        "vol_20_percentile": float((vol20 <= vol20.iloc[-1]).mean() * 100),
-        "price_vs_ma50_pct": float(x_last["ma_ratio_50"] * 100),
-        "momentum_20_pct": float((np.exp(x_last["mom_20"]) - 1) * 100),
-    }
+    n_test = int(len(test))
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "forecasts": forecasts,
-        "performance": performance,
-        "signals": signals,
-        "context": context,
-        "model": {
-            "type": "Ridge regression (scikit-learn) on standardised features, one model per horizon",
-            "alpha": RIDGE_ALPHA,
-            "features": [{"name": n, "label": FEATURE_LABELS[n]} for n in FEATURE_NAMES],
-            "target": "forward log return over the horizon, converted to a price",
-            "validation": (
-                f"Expanding-window walk-forward in ~{TEST_BLOCK}-session blocks; training rows whose target window "
-                "reaches the test block are purged; scaler fitted on training rows only."
-            ),
-            "interval": f"{int(INTERVAL_LEVEL * 100)}% range from empirical out-of-sample residual quantiles",
-            "baseline": "Price unchanged (predicted return = 0)",
-            "warmup_sessions": WARMUP,
-            "n_observations": int(len(close)),
+        "horizon": h,
+        "base_date": last_date.date().isoformat(),
+        "target_date": target_date(last_date, h),
+        "base_price": last_price,
+        "forecast": {
+            "model": default,
+            "model_label": LABELS[default],
+            "price": f_price,
+            "change_pct": (f_price / last_price - 1) * 100,
+            "interval": {
+                "level": INTERVAL_LEVEL,
+                "low": low,
+                "high": high,
+                "low_pct": (low / last_price - 1) * 100,
+                "high_pct": (high / last_price - 1) * 100,
+                "observed_coverage_pct": coverage,
+                "mean_width_usd_on_test": width_usd,
+                "built_from": "default model's validation-period errors",
+            },
         },
+        "selection": {
+            "default": default,
+            "rule": "Lower mean absolute error (MAE) on the validation period, Ridge vs Random Forest. The test period is not used.",
+            "validation_mae": val_mae,
+        },
+        "test": {
+            "period": {"start": X.index[test[0]].date().isoformat(), "end": X.index[test[-1]].date().isoformat()},
+            "n": n_test,
+            "effective_n": round(n_test / h, 1),
+            "methods": methods,
+            "always_up_pct": float(np.mean(actual_ret > 0) * 100),
+            "advantage": bool(advantage),
+            "verdict": "Beat the unchanged baseline on the test period" if advantage else "No demonstrated advantage over the unchanged-price baseline",
+        },
+        "splits": {"train": span(train), "validation": span(val), "test": span(test)},
+        "test_series": test_series,
+        "features": [{"name": k, "label": v} for k, v in FEATURE_LABELS.items()],
     }

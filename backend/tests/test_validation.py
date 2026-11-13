@@ -98,14 +98,27 @@ def test_csv_rejects_empty_and_binary():
         parse_csv_bytes(b"\xff\xfe\x00garbage")
 
 
+def test_yahoo_dates_use_real_timezone_not_fixed_offset():
+    """Bars stamped at local midnight must keep their date in BOTH winter (EST) and summer (EDT)."""
+    tz = "America/New_York"
+    days = pd.bdate_range("2024-01-02", periods=520)
+    stamps = [int(pd.Timestamp(d).tz_localize(tz).timestamp()) for d in days]  # local midnight -> UTC epoch
+    closes = (1800 + np.arange(len(days)) * 0.5).tolist()
+    payload = {"chart": {"result": [{"timestamp": stamps, "indicators": {"quote": [{"close": closes}]},
+                                     "meta": {"exchangeTimezoneName": tz, "gmtoffset": -18000}}], "error": None}}
+    res = data.parse_yahoo_chart(payload, now=stamps[-1] + 10**6)
+    assert list(res.series.index) == list(days)  # a fixed -5h offset would shift every summer bar back a day
+    assert (res.series.index.day_of_week < 5).all() and res.series.index.is_unique
+
+
 def test_yahoo_payload_parsing_and_partial_bar_drop(series):
-    s = series.iloc[-420:]
+    s = series.iloc[-520:]
     stamps = [int(t.timestamp()) + 14 * 3600 for t in s.index]  # midday UTC
     payload = {"chart": {"result": [{"timestamp": stamps, "indicators": {"quote": [{"close": s.tolist()}]},
-                                     "meta": {"gmtoffset": 0, "regularMarketTime": stamps[-1],
+                                     "meta": {"gmtoffset": 0, "regularMarketTime": stamps[-1], "regularMarketPrice": 1234.5,
                                               "currentTradingPeriod": {"regular": {"end": stamps[-1] + 3600}}}}], "error": None}}
     res = data.parse_yahoo_chart(payload, now=stamps[-1] + 60)  # session still open -> last bar dropped
-    assert res.dropped_partial_bar and len(res.series) == len(s) - 1
+    assert res.dropped_partial_bar and len(res.series) == len(s) - 1 and res.in_progress["price"] == 1234.5
     res2 = data.parse_yahoo_chart(payload, now=stamps[-1] + 7200)  # session closed -> kept
     assert not res2.dropped_partial_bar and len(res2.series) == len(s)
 
@@ -120,7 +133,7 @@ def test_store_fallbacks(tmp_path, series):
 
     def ok():
         calls["n"] += 1
-        return data.FetchResult(series=series.iloc[-500:])
+        return data.FetchResult(series=series.iloc[-600:])
 
     def boom():
         raise data.DataUnavailable("rate limited")
@@ -138,7 +151,7 @@ def test_store_fallbacks(tmp_path, series):
     # failed refresh keeps the cached real data and flags it
     store._fetcher = boom
     stale = store.get(force_refresh=True)
-    assert stale.meta["provider_error"] and len(stale.series) == 500 and any("failed" in w for w in stale.meta["warnings"])
+    assert stale.meta["provider_error"] and len(stale.series) == 600 and any("failed" in w for w in stale.meta["warnings"])
 
 
 def test_upload_is_persisted_and_labelled(tmp_path, series):
