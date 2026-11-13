@@ -28,6 +28,7 @@ from sklearn.preprocessing import StandardScaler
 
 from . import config
 from .features import FEATURE_LABELS, FEATURE_NAMES, build_features, build_target
+from .sessions import describe as calendar_description, next_sessions
 
 TRAIN_FRAC, VAL_FRAC = 0.6, 0.2
 INTERVAL_LEVEL = 0.80
@@ -59,8 +60,8 @@ def _direction(pred_ret: np.ndarray, actual_ret: np.ndarray) -> float:
 
 
 def target_date(last: pd.Timestamp, horizon: int) -> str:
-    # Weekdays only; exchange holidays are not modelled, so the date is approximate.
-    return pd.bdate_range(last + pd.Timedelta(days=1), periods=horizon)[-1].date().isoformat()
+    """Date of the ``horizon``-th daily bar after ``last`` (see sessions.py for the calendar rule)."""
+    return next_sessions(last, horizon)[-1].date().isoformat()
 
 
 def split_positions(pos: np.ndarray, h: int, n: int):
@@ -155,6 +156,9 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         for j, i in enumerate(test)
     ]
 
+    def span(idx):
+        return {"start": X.index[idx[0]].date().isoformat(), "end": X.index[idx[-1]].date().isoformat(), "n": int(len(idx))}
+
     # ---- 3) forecast: refit the default model on all labelled data -------------------------------
     final = make_model(default).fit(Xv, yv)
     pred = float(final.predict(x_last.to_numpy().reshape(1, -1))[0])
@@ -162,9 +166,6 @@ def run_prediction(close: pd.Series, h: int) -> dict:
     f_price = last_price * float(np.exp(pred))
     vol_now = float(x_last["vol_20"]) * np.sqrt(h)
     low, high = last_price * float(np.exp(pred + q_low * vol_now)), last_price * float(np.exp(pred + q_high * vol_now))
-
-    def span(idx):
-        return {"start": X.index[idx[0]].date().isoformat(), "end": X.index[idx[-1]].date().isoformat(), "n": int(len(idx))}
 
     n_test = int(len(test))
     return {
@@ -186,7 +187,12 @@ def run_prediction(close: pd.Series, h: int) -> dict:
                 "high_pct": (high / last_price - 1) * 100,
                 "observed_coverage_pct": coverage,
                 "mean_width_usd_on_test": width_usd,
-                "built_from": "default model's validation-period errors, scaled to recent volatility",
+                "z_low": q_low,
+                "z_high": q_high,
+                "scale": "20-session daily volatility x sqrt(horizon), measured at each forecast origin",
+                "calibrated_on": span(val),
+                "evaluated_on": {"start": X.index[test[0]].date().isoformat(), "end": X.index[test[-1]].date().isoformat(), "n": int(len(test))},
+                "built_from": "10th/90th percentiles of the default model's validation-period errors, expressed in units of recent volatility",
             },
         },
         "selection": {
@@ -206,6 +212,7 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         },
         "training": {"closes": int(len(close)), "first_close": close.index[0].date().isoformat(), "last_close": close.index[-1].date().isoformat(),
                      "usable_samples": int(n), "n_features": len(FEATURE_NAMES), "final_fit_samples": int(n)},
+        "calendar": calendar_description(),
         "splits": {"train": span(train), "validation": span(val), "test": span(test)},
         "test_series": test_series,
         "features": [{"name": k, "label": v} for k, v in FEATURE_LABELS.items()],
