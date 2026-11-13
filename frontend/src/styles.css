@@ -233,3 +233,7 @@ table.data th.num, table.data td.num { text-align: right; white-space: nowrap; }
   table.data td:first-child .tag { display: block; width: fit-content; margin: 4px 0 0; }
 }
 @media (max-width: 520px) { table.data th.num { white-space: normal; } table.data th { letter-spacing: .04em; } }
+.lg.muted-solid { border-top: 2px solid var(--muted); }
+.setup { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; display: grid; gap: 10px; max-width: 720px; }
+.setup ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; color: #C9D0D9; }
+.row-left { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 10px; }

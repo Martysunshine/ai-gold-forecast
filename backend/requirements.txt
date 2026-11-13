@@ -7,3 +7,4 @@ scikit-learn==1.9.1
 python-multipart==0.0.33
 defusedxml==0.7.1
 pandas_market_calendars==5.6.0
+python-dotenv==1.2.4

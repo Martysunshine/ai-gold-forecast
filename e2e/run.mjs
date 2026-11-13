@@ -202,6 +202,46 @@ let originalPrice;
   await ctx.close();
 }
 
+
+// ============================== GLD comparison (optional Alpaca view) ==============================
+{
+  // Real server, no keys configured: guidance, not an error; opening the tab never touches the model.
+  const { ctx, page, errors, bad, predictCalls } = await open({ width: 1440, height: 900 }, LIVE);
+  await page.waitForSelector('[data-testid="latest-price"]', { timeout: 30000 });
+  const gldCalls = [];
+  page.on("request", (r) => { if (r.url().includes("/api/compare/gld")) gldCalls.push(r.url()); });
+  check("gld: no Alpaca request on page load (tab is lazy)", gldCalls.length === 0);
+  await page.click('[data-testid="tab-gld"]');
+  await page.waitForSelector('[data-testid="gld-setup"]', { timeout: 15000 });
+  const setup = await page.textContent('[data-testid="gld-setup"]');
+  check("gld (no keys): setup guidance shown, labelled not a model input", /ALPACA_API_KEY_ID/.test(setup) && /not.*used by the forecast/i.test(await page.textContent('[data-testid="gld-note"]')) && gldCalls.length === 1);
+  check("gld (no keys): no model requests, console errors or API failures", predictCalls.length === 0 && errors.length === 0 && bad.length === 0, [...errors, ...bad].join(" | "));
+  await ctx.close();
+}
+for (const [w, h] of [[1440, 900], [390, 844]]) {
+  // Configured state rendered from a MOCKED /api/compare/gld response (no real keys in this test); GLD = 0.092 x GC=F with noise.
+  const prices = await (await fetch(`${LIVE}/api/prices`)).json();
+  const pts = prices.prices.slice(-1000);
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.004;
+  const gld = pts.map((p) => p.close * 0.092 * (1 + rnd()));
+  const indexed = pts.map((p, i) => ({ date: p.date, gc: +(p.close / pts[0].close * 100).toFixed(3), gld: +(gld[i] / gld[0] * 100).toFixed(3) }));
+  const mock = { configured: true, note: "GLD is an exchange-traded fund, not the futures contract. Shown for comparison only; not used by the forecast.",
+    instrument: { name: "SPDR Gold Shares (GLD), NYSE Arca", kind: "etf", unit: "USD per share", note: "" }, source: "Alpaca market data (iex feed)",
+    fetched_at: new Date().toISOString(), age_minutes: 0, provider_error: null, status: { mode: "live", label: "Live" },
+    latest: { date: pts.at(-1).date, close: gld.at(-1), change_pct: (gld.at(-1) / gld.at(-2) - 1) * 100 }, count: pts.length, gold_source: prices.source,
+    comparison: { common_dates: pts.length, start: pts[0].date, end: pts.at(-1).date, indexed,
+      window: { sessions: 252, start: pts.at(-253).date, end: pts.at(-1).date, return_correlation: 0.97, gc_return_pct: 4.2, gld_return_pct: 3.9 } } };
+  const { ctx, page, errors } = await open({ width: w, height: h }, LIVE, async (p) => { await p.route("**/api/compare/gld*", (r) => r.fulfill({ json: mock })); });
+  await page.waitForSelector('[data-testid="latest-price"]', { timeout: 30000 });
+  await page.click('[data-testid="tab-gld"]');
+  await page.waitForSelector('[data-testid="gld"] svg.recharts-surface', { timeout: 15000 });
+  await page.waitForTimeout(400);
+  const ov = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
+  check(`gld ${w} (mocked API): close, correlation and indexed chart render; no overflow`,
+    /\$/.test(await txt(page, "gld-close")) && (await txt(page, "gld-corr")) === "0.97" && ov[0] <= ov[1] && errors.length === 0, `overflow ${ov}`);
+  if (w === 1440) await page.screenshot({ path: `${OUT}/gld-1440-mocked.png` });
+  await ctx.close();
+}
 // ============================== 768 and 390: loaded + forecast, layout, touch targets ==============================
 for (const [w, h] of [[768, 1024], [390, 844]]) {
   const { ctx, page, errors, bad } = await open({ width: w, height: h }, LIVE);
