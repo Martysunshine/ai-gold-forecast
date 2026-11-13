@@ -112,8 +112,7 @@ export function PriceChart({ prices, prediction }: { prices: PricePayload; predi
           </table>
         </div>
       )}
-      <p className="foot-note">{prices.count.toLocaleString()} daily closes, {fmtTs(parseDay(prices.first_date), { day: "numeric", month: "short", year: "numeric" })} → {fmtTs(parseDay(prices.latest.date), { day: "numeric", month: "short", year: "numeric" })}.
-        {prediction && " The forecast date skips weekends but not exchange holidays, so it may be a day early."}</p>
+      <p className="foot-note">{prices.count.toLocaleString()} daily closes, {fmtTs(parseDay(prices.first_date), { day: "numeric", month: "short", year: "numeric" })} → {fmtTs(parseDay(prices.latest.date), { day: "numeric", month: "short", year: "numeric" })}.</p>
     </section>
   );
 }

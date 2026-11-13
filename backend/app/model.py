@@ -6,7 +6,8 @@ Protocol (one chronological split per horizon, nothing fancy):
 
   * Both models are fitted on *train* and compared on *validation*. The one with the lower
     validation MAE becomes the default model. The test period plays no part in that choice.
-  * The 80% range is built from the default model's *validation* residuals.
+  * The 80% range is built from the default model's *validation* residuals, expressed in units of recent
+    volatility (20-session daily volatility x sqrt(horizon)) so it widens in turbulent markets and narrows in calm ones.
   * The test period is then scored once: models are refitted on everything before it and
     predict it. Test MAE, directional accuracy and the observed coverage of the range are reported.
   * Purging: a sample at date t has a target spanning (t, t+h]. A training/validation sample is
@@ -110,9 +111,10 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         val_mae[name] = _mae(price_of(val, val_pred[name]), price_h[val])
     val_mae["unchanged"] = _mae(price0[val], price_h[val])
     default = min(("ridge", "random_forest"), key=lambda k: val_mae[k])
-    resid = yv[val] - val_pred[default]
+    vol = X["vol_20"].to_numpy() * np.sqrt(h)  # expected size of an h-session move at each forecast origin
+    z = (yv[val] - val_pred[default]) / vol[val]  # validation errors in units of recent volatility
     lo_q, hi_q = (1 - INTERVAL_LEVEL) / 2, 1 - (1 - INTERVAL_LEVEL) / 2
-    q_low, q_high = float(np.quantile(resid, lo_q)), float(np.quantile(resid, hi_q))
+    q_low, q_high = float(np.quantile(z, lo_q)), float(np.quantile(z, hi_q))
 
     # ---- 2) test: score once --------------------------------------------------------------------
     test_pred = {}
@@ -133,7 +135,7 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         methods[k]["vs_baseline_pct"] = float((methods[k]["mae"] / base_mae - 1) * 100)
     d_mae = methods[default]["mae"]
     advantage = d_mae <= (1 - MATERIAL_IMPROVEMENT) * base_mae
-    lo_r, hi_r = test_pred[default] + q_low, test_pred[default] + q_high
+    lo_r, hi_r = test_pred[default] + q_low * vol[test], test_pred[default] + q_high * vol[test]
     coverage = float(np.mean((actual_ret >= lo_r) & (actual_ret <= hi_r)) * 100)
     width_usd = float(np.mean(price0[test] * (np.exp(hi_r) - np.exp(lo_r))))
 
@@ -152,7 +154,8 @@ def run_prediction(close: pd.Series, h: int) -> dict:
     pred = float(final.predict(x_last.to_numpy().reshape(1, -1))[0])
     last_date, last_price = close.index[-1], float(close.iloc[-1])
     f_price = last_price * float(np.exp(pred))
-    low, high = last_price * float(np.exp(pred + q_low)), last_price * float(np.exp(pred + q_high))
+    vol_now = float(x_last["vol_20"]) * np.sqrt(h)
+    low, high = last_price * float(np.exp(pred + q_low * vol_now)), last_price * float(np.exp(pred + q_high * vol_now))
 
     def span(idx):
         return {"start": X.index[idx[0]].date().isoformat(), "end": X.index[idx[-1]].date().isoformat(), "n": int(len(idx))}
@@ -177,7 +180,7 @@ def run_prediction(close: pd.Series, h: int) -> dict:
                 "high_pct": (high / last_price - 1) * 100,
                 "observed_coverage_pct": coverage,
                 "mean_width_usd_on_test": width_usd,
-                "built_from": "default model's validation-period errors",
+                "built_from": "default model's validation-period errors, scaled to recent volatility",
             },
         },
         "selection": {

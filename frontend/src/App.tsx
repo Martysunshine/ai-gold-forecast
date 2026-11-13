@@ -112,14 +112,7 @@ export default function App() {
 
         {!noData && <NewsSection news={news} loading={newsLoading} error={newsErr} onRetry={() => loadNews(true)} />}
 
-        <footer className="limits">
-          <h2>Read this first</h2>
-          <ul>
-            <li>This is a demonstration of a forecasting and evaluation workflow, not investment advice or a trading system.</li>
-            <li>Gold is hard to predict. A model can output a number without having shown any advantage over “the price stays unchanged”; the test panel shows how it actually did.</li>
-            <li>The default series is COMEX gold futures (GC=F), not spot gold. News is context only and does not feed the model.</li>
-          </ul>
-        </footer>
+        <footer className="credits">Gold Outlook · prices: Yahoo Finance (GC=F, COMEX gold futures) · news: Google News RSS · news is not used by the prediction model</footer>
       </main>
     </div>
   );
