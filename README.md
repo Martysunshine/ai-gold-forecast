@@ -1,155 +1,270 @@
-# Gold Outlook
+# GOLD OUTLOOK
 
-A gold futures forecasting and evaluation workspace.
+### One metal. Three horizons. Show your work.
 
-Historical market data, short-horizon forecasts and chronological model evaluation in a single interface. Built with Python, FastAPI, scikit-learn, React and TypeScript.
+A gold futures forecasting workspace combining historical prices, machine-learning forecasts and transparent model evaluation.
 
-![Gold Outlook workspace at 1440px](docs/screenshots/workspace-1440.png)
+![Gold Outlook on a 1440px screen: COMEX gold futures at $3,885.30, a six-month price chart ending at the forecast origin, and a 5-session Random Forest forecast of $3,910.45 with its 80% target range](docs/screenshots/hero-desktop.png)
 
-## Interface
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.162-009688?logo=fastapi&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-1.9-F7931E?logo=scikitlearn&logoColor=white)
+![React 18 + TypeScript](https://img.shields.io/badge/React%2018-TypeScript-3178C6?logo=typescript&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-83%20backend%20%C2%B7%2062%20browser-2ea44f)
 
-A single workspace for one instrument, COMEX gold futures (`GC=F`).
+**[Quick start](#quick-start) · [The terminal](#the-terminal) · [Under the hood](#under-the-hood) · [Results](#results-without-the-victory-lap) · [Development](#development)**
 
-1. **Market strip.** Latest completed close, session change, observation date and 20-session realised volatility. Each metric has a definition on hover or keyboard focus.
-2. **Chart and forecast configuration.** Choose a horizon (1, 5 or 20 sessions) and run the forecast. The chart marks the forecast origin, draws a straight connector to the target session, and shades the target range at that session only. The connector is not a modelled daily path. A status line states whether the displayed result matches the selected horizon and the current data.
-3. **Research tabs.** *Backtest* shows actual vs predicted prices on the held-out test period, a comparison against an unchanged-price baseline, evaluation dates, MAE and the measured coverage of the range. *Market Context* lists recent gold headlines with sources and links; news is context and is not an input to the forecast. *GLD Comparison* (optional, needs Alpaca keys) sets the GLD gold ETF beside the futures. *Methodology* summarises the data, features, evaluation, calendar and uncertainty handling.
-4. **Data controls.** Refresh, CSV upload, "Use live data" (to leave an uploaded file), and a CSV export of the displayed forecast.
+---
 
-The layout stacks at narrow widths; it was checked at 390, 768 and 1440 px ([768](docs/screenshots/workspace-768.png), [390](docs/screenshots/workspace-390.png)).
+Most price-prediction demos show you a confident number. This one shows the number, the range around it, and a year of evidence about how much that number deserves to be trusted. It runs on COMEX gold futures (`GC=F`), forecasts 1, 5 or 20 trading sessions ahead, and grades every model against the toughest simple opponent in finance: *tomorrow's price is today's price.*
+
+The baseline gets a seat at the table. On the latest data, it also gets the last word.
+
+## The workflow
+
+| | |
+|---|---|
+| **1. Explore the tape.** Five years of daily closes, viewable as 3M, 6M, 1Y or 5Y windows, with the latest completed session, its change and 20-session realised volatility. | **2. Pick a horizon.** 1, 5 or 20 sessions on the real exchange calendar, so "5 sessions" lands on an actual trading day, not five calendar days. |
+| **3. Run the forecast.** A point estimate, a projected change, the target session and a nominal 80% range, with the range's *observed* coverage printed right beside it. | **4. Check the receipts.** The Backtest tab plots every held-out prediction against what actually happened, next to the unchanged-price baseline. |
+| **5. Read the room.** Market Context collects recent gold headlines with sources. They are background only and never feed the model. | **Optional: GLD side by side.** With Alpaca keys, the GLD ETF is plotted against the futures. This view is for context only. |
+
+![The forecast interaction: selecting 1, 5 and 20 sessions, running each forecast, then opening the backtest](docs/screenshots/forecast-demo.gif)
+
+<table>
+<tr>
+<td width="68%"><img src="docs/screenshots/backtest.png" alt="Backtest tab: Random Forest test MAE $134.96 against $134.66 for the unchanged price, 72% range coverage, and a chart of actual prices against 5-session-ahead predictions from Nov 2025 to Nov 2026"></td>
+<td width="32%"><img src="docs/screenshots/mobile-forecast.png" alt="Mobile layout at 390px: price chart with a 20-session forecast of $3,955.85 and its target range"></td>
+</tr>
+<tr>
+<td><sub>Backtest: every held-out prediction against the actual price and the baseline.</sub></td>
+<td><sub>Mobile, 390 px: the same workspace, stacked.</sub></td>
+</tr>
+</table>
 
 ## Quick start
 
-Requires Python 3.11+ and Node 20+ (and network access for prices and headlines).
+**Prerequisites:** Python 3.11+, Node.js 20+ with npm, and internet access for prices and headlines. Tested on macOS; the script is plain bash.
 
 ```bash
+git clone https://github.com/Prits3/gold_trading_prediction.git
+cd gold_trading_prediction
 ./start.sh
 ```
 
-Open http://localhost:8742 (the script opens it for you). The first run creates `backend/.venv`, installs the pinned dependencies, builds the frontend and starts the server (about a minute); later runs start immediately. Keep the terminal open while using the app.
+Then open **http://localhost:8742** (the script opens it for you once the server answers). The first run creates `backend/.venv`, installs the pinned dependencies, builds the frontend and starts the server, which takes about a minute. Later runs start immediately. Keep the terminal open while you use the app.
 
 ```bash
-PORT=9000 ./start.sh          # use another port
-GOLD_OFFLINE=1 ./start.sh     # never call external providers: cached data or CSV upload only
+PORT=9000 ./start.sh          # another port
+GOLD_OFFLINE=1 ./start.sh     # no external calls: cached data or a CSV upload only
 ```
 
-### Optional: GLD comparison via Alpaca
+No API keys are needed. Optional settings live in [`.env.example`](.env.example).
 
-Alpaca does not carry gold futures, so it is used for one read-only purpose: daily bars of the GLD gold ETF, shown in the *GLD Comparison* tab next to `GC=F` (both indexed to 100, with the correlation of daily returns). GLD is a different instrument (an ETF priced per share) and is never a model input; no order or account endpoints are called.
+## The terminal
 
-```bash
-cp .env.example .env    # then set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper or market-data keys)
-./start.sh
-```
+| Capability | Why it's there |
+|---|---|
+| **Market strip** | Latest *completed* close, session change, observation date, realised volatility. The in-progress price is shown separately and never modelled. |
+| **Price chart + forecast overlay** | Marks the forecast origin, draws a straight connector to the target session and shades the range at that session only. The connector is not a modelled daily path. |
+| **Horizon control** | 1, 5 or 20 sessions. Each horizon has its own model, selection and backtest. |
+| **Configuration status line** | States whether the displayed result matches the selected horizon and the current data. Stale results are never passed off as fresh. |
+| **Backtest tab** | Test MAE, direction accuracy, range coverage and ±2% accuracy for both models and the baseline, plus the actual-vs-predicted chart and the exact train/validation/test dates. |
+| **Market Context tab** | Recent gold headlines (Google News RSS) with sources, dates and keyword themes. |
+| **GLD Comparison tab** | Optional. GLD ETF vs `GC=F`, indexed to 100, with the 1-year return correlation, using read-only Alpaca market data. |
+| **Methodology tab** | Data, features, evaluation, calendar and uncertainty handling, in the app itself. |
+| **Data controls** | Refresh, CSV upload (validated before anything is replaced), "Use live data", and a CSV export of the forecast on screen. |
 
-`ALPACA_DATA_FEED=iex` works on the free plan. Keys are read on the server only and never appear in the interface, API responses, logs or error messages. Without keys the tab shows these setup steps and everything else works unchanged.
-
-Development with hot reload: run `.venv/bin/uvicorn app.main:app --port 8742` in `backend/`, and `npm run dev` in `frontend/`, then open http://localhost:5183 (it proxies `/api` to port 8742). Optional settings are listed in [`.env.example`](.env.example).
-
-## System design
+## Under the hood
 
 ```mermaid
 flowchart LR
-  Y["Yahoo Finance chart API<br/>GC=F, daily"] --> I["Ingestion + validation<br/>timezone, completed-session handling"]
+  Y["Yahoo Finance chart API<br/>GC=F, daily"] --> I["Ingestion + validation<br/>timezone, completed sessions"]
   U["CSV upload"] --> I
-  I --> C[("Slots on disk<br/>provider | upload")]
-  C --> F["Feature generation<br/>12 features, past prices only"]
+  I --> C[("Disk cache<br/>provider | upload slots")]
+  C --> F["12 features<br/>past prices only"]
   F --> M["Ridge | Random Forest<br/>vs unchanged baseline"]
-  S["Session calendar<br/>CME Globex gold, minus US holidays"] --> M
+  S["Session calendar<br/>CME gold ∩ NYSE"] --> M
   M --> A["FastAPI<br/>/api/*"]
   N["Google News RSS"] --> A
-  G["Alpaca market data<br/>GLD ETF, optional"] --> A
-  A --> W["React + TypeScript workspace<br/>Recharts"]
+  G["Alpaca market data<br/>GLD, optional"] --> A
+  A --> W["React + TypeScript<br/>Recharts workspace"]
 ```
 
-## Forecasting approach
+The backend is Python with FastAPI, pandas and scikit-learn. The frontend is React 18 with TypeScript, Vite and Recharts. `./start.sh` builds the frontend once, and FastAPI serves it with the API on a single port.
 
-- **Target.** The forward log return over the horizon (1, 5 or 20 daily bars), converted to a price. One model per horizon.
-- **Features** (12, each computed from closes up to and including the forecast origin): the last five daily returns; 5-, 10- and 20-session momentum; price relative to its 5- and 20-session average; 10- and 20-session realised volatility.
-- **Models.** Ridge regression (standardised inputs, `alpha=100`) and a Random Forest (200 trees, depth 4, at least 20 samples per leaf, half of the features per split). Hyperparameters are fixed, not searched. Baseline: price unchanged.
-- **Selection.** The model with the lower validation MAE (mean absolute error of the predicted price, in USD) is selected for each horizon. The test period plays no part in that choice.
-- **Forecast.** The selected model is refitted on all labelled samples and applied to the latest features.
+## The models
 
-## Evaluation
+**Target.** The forward log return over *h* daily bars (h = 1, 5, 20), converted back to a price. One model per horizon.
 
-One chronological split per horizon: 60% train, 20% validation, 20% test, with the same origins used for every method.
+**Features.** There are 12, each computed from closes up to and including the forecast origin:
 
-- Both models are fitted on **train**; **validation** selects the model and calibrates the range.
-- A sample at date *t* has a target window (*t*, *t+h*]. A sample is used only if its window ends before the next period starts, so no training or validation target reaches into a later period (purging).
-- The **test** period is scored once, after refitting on everything before it.
-- **Range.** The 10th and 90th percentiles of the selected model's validation errors, expressed in units of recent volatility (20-session daily volatility × √horizon at each origin), are rescaled at the forecast origin. This gives a nominal 80% range. Its coverage is then measured on the test period.
+| Group | Features |
+|---|---|
+| Recent returns | last five daily log returns |
+| Momentum | 5-, 10- and 20-session log momentum |
+| Mean reversion | price vs its 5- and 20-session average |
+| Volatility | 10- and 20-session realised volatility |
 
-Results on live data, 13 Nov 2026 (1,257 daily closes, 15 Nov 2021 → 12 Nov 2026; 1,232 usable samples for 5 sessions: 734 train, 241 validation, 247 test). MAE in USD.
+**Contenders.**
+- **Ridge regression:** standardised inputs, `alpha=100`.
+- **Random Forest:** 200 trees, depth 4, at least 20 samples per leaf, half the features per split.
+- **Unchanged price:** the baseline, which predicts that nothing moves.
 
-| Horizon | Selected | Validation MAE (Ridge / RF / unchanged) | Test MAE (Ridge / RF / **unchanged**) | Test period | Test n (≈ independent) | Direction right (Ridge / RF; always-up) | Range coverage (nominal 80%) |
-|---|---|---|---|---|---|---|---|
-| 1 | Ridge | 32.96 / 33.10 / 33.07 | 57.67 / 57.88 / **57.43** | 17 Nov 2025 → 11 Nov 2026 | 248 (≈248) | 50% / 51%; 51% | 83% |
-| 5 | Random Forest | 70.43 / 70.09 / 71.30 | 136.39 / 134.96 / **134.66** | 12 Nov 2025 → 5 Nov 2026 | 247 (≈49) | 50% / 53%; 51% | 72% |
-| 20 | Ridge | 130.37 / 133.86 / 146.98 | 283.80 / 288.16 / **270.39** | 27 Oct 2025 → 15 Oct 2026 | 244 (≈12) | 47% / 45%; 45% | 50% |
+The model hyperparameters are fixed in advance, with no tuning against the test set.
 
-Reading the table:
+**Selection.** For each horizon, the model with the lower validation MAE wins. The test period plays no part in that choice. The winner is then refitted on all labelled data and applied to the latest features.
 
-- **Neither model beat the unchanged-price baseline on the test period at any horizon.** At 20 sessions both models were ahead of the baseline on validation and behind it on test. The interface labels this "No demonstrated advantage" next to every forecast.
-- **Range coverage** was 83%, 72% and 50% against a nominal 80%. The 5- and 20-session ranges were too narrow on the test year.
-- Overlapping multi-session outcomes are not independent. The "≈ independent" count is n ÷ horizon, so at 20 sessions about 12 independent outcomes support these comparisons.
-- Price accuracy within ±2% of the actual price was 79% (1 session), 40% (5) and 16% (20) for the selected model, against 80%, 42% and 15% for unchanged. Wide tolerances reward calm markets, not skill.
+**Range.** The 10th and 90th percentiles of the selected model's validation errors are measured in units of recent volatility (20-session daily vol × √h) and rescaled at the forecast origin. That makes a *nominal* 80% range, whose real coverage is then measured on the test period.
 
-## Data and market conventions
+<details>
+<summary><b>Evaluation protocol in detail</b></summary>
+
+- **Split.** One chronological split per horizon: 60% train, 20% validation, 20% test. All three methods use the same forecast origins.
+- **Train.** Both models are fitted here.
+- **Validation.** Picks the model and calibrates the range.
+- **Test.** Scored once, after refitting on everything before it.
+- **Purging.** A sample at date *t* has the target window (*t*, *t+h*]. It is used only if that window closes before the next period starts, so no training or validation label reaches into a later period.
+- **Overlap.** Multi-session outcomes overlap, so they are not independent. The "≈ independent" count is n ÷ h.
+- **Leakage tests.** Validation scores and range calibration are tested to be unaffected by test-period prices.
+
+</details>
+
+## Results, without the victory lap
+
+Live data as of **13 Nov 2026**: 1,257 daily closes, 15 Nov 2021 → 12 Nov 2026. For 5 sessions that gives 1,232 usable samples: 734 train, 241 validation and 247 test. MAE is in USD per troy ounce; lower is better, and **bold** marks the best test MAE.
+
+| Horizon | Selected | Test period | Test MAE: Ridge | Test MAE: RF | Test MAE: unchanged | Direction right (selected / always-up) | Range coverage (nominal 80%) |
+|---|---|---|---:|---:|---:|---|---:|
+| 1 session | Ridge | 17 Nov 2025 → 11 Nov 2026 · n=248 | 57.67 | 57.88 | **57.43** | 50% / 51% | 83% |
+| 5 sessions | Random Forest | 12 Nov 2025 → 5 Nov 2026 · n=247 (≈49 indep.) | 136.39 | 134.96 | **134.66** | 53% / 51% | 72% |
+| 20 sessions | Ridge | 27 Oct 2025 → 15 Oct 2026 · n=244 (≈12 indep.) | 283.80 | 288.16 | **270.39** | 47% / 45% | 50% |
+
+**What this says, plainly:**
+
+- **Neither model beat "price unchanged" on the test year at any horizon.** At 5 sessions the gap is 30 cents on a $135 error, which is noise. At 20 sessions both models led the baseline on validation (Ridge $130.37 vs $146.98) and then trailed it on test. That is what a regime change looks like.
+- **The ranges were honest at 1 session (83%) and too narrow beyond that** (72% and 50%). The app prints the observed coverage next to every range for this reason.
+- The interface labels each forecast **"No demonstrated advantage"** when the test says so. That label is computed, not hard-coded.
+- Daily gold is close to a random walk. The value here is the evaluation frame: a calendar-correct, leakage-tested, baseline-anchored setup that would show real skill if a model had any.
+
+<details>
+<summary><b>Validation numbers and the ±2% view</b></summary>
+
+| Horizon | Validation MAE (Ridge / RF / unchanged) | Within ±2% of actual (selected / unchanged) |
+|---|---|---|
+| 1 | 32.96 / 33.10 / 33.07 | 79% / 80% |
+| 5 | 70.43 / 70.09 / 71.30 | 40% / 42% |
+| 20 | 130.37 / 133.86 / 146.98 | 16% / 15% |
+
+Wide tolerances reward calm markets, not skill.
+
+</details>
+
+## Data & market conventions
 
 | Topic | Convention |
 |---|---|
-| Instrument | COMEX gold futures, front-month continuous series (`GC=F`), USD per troy ounce. A futures series, not spot gold; contract rolls can introduce small jumps. |
-| Source | Yahoo Finance chart endpoint, five years of daily bars. The endpoint is unofficial and may be rate-limited or change. |
-| Completed sessions | A bar for a session still in progress is dropped. The latest close is always a completed session; the in-progress price is displayed separately and never modelled. |
-| Time zone | Bars are dated in `America/New_York`, converted per timestamp so daylight saving is handled correctly (an earlier fixed-offset conversion misdated bars in summer months; covered by a regression test). |
-| Session calendar | Target dates are the *h*-th future daily bar: CME Globex gold sessions (`pandas_market_calendars`, `CMEGlobex_Gold`) minus US exchange holidays. CME runs abbreviated sessions on those holidays, but the provider records no separate daily bar for most of them. Checked on 13 Nov 2026 against the five-year series: all 1,254 rule sessions had a bar, 3 observed bars fell outside the rule (23 Nov 2023, 9 Jan 2025, 4 Jul 2025), and the unfiltered gold calendar would have added 33 days with no bar. Reproduce with `cd backend && .venv/bin/python -m app.sessions`. |
-| Cache | Provider data is cached on disk for 15 minutes. A failed refresh keeps the last valid dataset and shows its age. Uploaded CSVs live in a separate slot and stay active until "Use live data" is chosen; an invalid upload is rejected before anything is written. |
-| CSV upload | A date column and a `Close` / `Price` column, at least 500 rows. Validated for dates, positive numbers, duplicates, ordering, future dates and implausible jumps. Units and instrument of an upload cannot be verified. |
-| Missing data | Nothing is substituted. With no provider data and no cache the interface shows an empty state. |
+| **Instrument** | COMEX gold futures, front-month continuous (`GC=F`), **USD per troy ounce**. This is futures, not spot gold, so contract rolls can introduce small jumps. |
+| **Provider** | Yahoo Finance chart endpoint, five years of daily bars. The endpoint is unofficial and may be rate-limited or change. |
+| **Completed sessions** | A bar for a session still in progress is dropped. The latest close is always a finished session. |
+| **Time zone** | Bars are dated in `America/New_York`, converted per timestamp so daylight saving is handled correctly. A regression test covers this. |
+| **Calendar** | A target is the *h*-th future session: CME Globex gold sessions minus US exchange holidays (`pandas_market_calendars`). On the five-year series, every one of the 1,254 rule sessions had a bar. Reproduce with `cd backend && .venv/bin/python -m app.sessions`. |
+| **Cache** | Provider data is cached on disk for 15 minutes. A failed refresh keeps the last valid data and shows its age. Missing data is never filled in. With no data, the app shows an empty state. |
+| **CSV upload** | Needs a date column, a `Close`/`Price` column and at least 500 rows. Dates, positivity, duplicates, ordering, future dates and implausible jumps are checked. An invalid file is rejected without touching the active data. |
+| **News** | Google News RSS headlines with source links. Themes are keyword matches; the explanatory lines are general background, not quotes from the articles. **Not a model input.** |
 
-## API
+<details>
+<summary><b>Optional: GLD comparison via Alpaca</b></summary>
+
+Alpaca does not carry gold futures, so it is used for one read-only job: daily bars of the GLD ETF, shown beside `GC=F`. GLD is a different instrument, priced per share, and it is never a model input. The app calls no order or account endpoints.
+
+```bash
+cp .env.example .env    # set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper or market-data keys)
+./start.sh
+```
+
+`ALPACA_DATA_FEED=iex` works on the free plan. Keys are read on the server only. They never appear in the interface, API responses, logs or error messages, and tests check this. `.env` is git-ignored. Without keys, the tab shows setup steps and everything else works unchanged.
+
+</details>
+
+<details>
+<summary><b>API reference</b></summary>
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/health` | Liveness check. |
-| `GET /api/prices` | Active dataset: closes, latest observation, session status, data age, realised volatility, `data_key`. |
-| `POST /api/prices/refresh` | Re-fetch provider data. On failure the last valid data is returned with `provider_error`. |
-| `POST /api/prices/use-provider` | Switch from an uploaded file back to provider data (live, or the saved provider copy). |
-| `POST /api/prices/upload` | Validate and activate an uploaded CSV (`422` leaves the active data unchanged). |
-| `GET /api/predict?horizon=1\|5\|20` | Forecast, range, backtest series and metrics for the active data. Results carry the `data_key` they were computed from. |
-| `GET /api/predict/download?horizon=…&key=…` | CSV of the forecast; `409` if the active data no longer matches `key`. |
-| `GET /api/news[?refresh=true]` | Recent gold headlines with sources, dates and keyword themes. |
-| `GET /api/compare/gld[?refresh=true]` | Optional GLD ETF comparison from Alpaca market data; `{"configured": false}` with setup steps when no keys are set. |
+| `GET /api/health` | Liveness check |
+| `GET /api/prices` | Active dataset, latest observation, session status, data age, realised vol, `data_key` |
+| `POST /api/prices/refresh` | Re-fetch provider data; on failure, keeps the last valid data and adds `provider_error` |
+| `POST /api/prices/use-provider` | Leave an uploaded file and return to provider data |
+| `POST /api/prices/upload` | Validate and activate a CSV (`422` leaves the active data unchanged) |
+| `GET /api/predict?horizon=1\|5\|20` | Forecast, range, backtest series and metrics, tagged with the `data_key` they used |
+| `GET /api/predict/download?horizon=…&key=…` | Forecast as CSV; `409` if the data has changed since |
+| `GET /api/news[?refresh=true]` | Recent gold headlines with sources and themes |
+| `GET /api/compare/gld[?refresh=true]` | Optional GLD comparison; `{"configured": false}` with setup steps when no keys are set |
 
-## Verification
+</details>
+
+## Development
+
+Hot reload, in two terminals:
+
+```bash
+# backend (after ./start.sh has created the venv once)
+cd backend && .venv/bin/uvicorn app.main:app --reload --port 8742
+
+# frontend: http://localhost:5183, proxies /api to :8742
+cd frontend && npm run dev
+```
+
+Checks:
 
 ```bash
 cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 83 tests
-cd frontend && npm run build                                                                    # type-check + production build
-./e2e/run.sh                                                                                    # 62 browser checks (needs Chrome and internet)
+cd frontend && npm run build                                                                    # tsc type-check + production build
+./e2e/run.sh                                                                                    # 62 browser checks (needs Chrome + internet)
 ```
 
-- **Backend tests** cover upload and provider validation, DST-correct dates, the session calendar, feature causality, purging, validation results and range calibration not depending on test-period prices, consistency of all three horizons, export parity with the API, stale-data rejection, caching, cache and outage fallbacks, upload safety, the return to provider data, and the Alpaca client (pagination, dates, error mapping, cache, and that key values never appear in any response).
-- **Browser checks** (`e2e/`, Chrome via `playwright-core`) run against the production build served by FastAPI: the full forecast workflow at 1440 px, export values against the displayed forecast, refresh, valid and invalid CSV upload, provider failure with and without a cache, a news outage, the GLD tab without keys and (with a mocked API response) with keys, keyboard operation, and layout, overflow, touch-target and contrast checks at 1440, 768 and 390 px.
+<details>
+<summary><b>What the tests cover</b></summary>
 
-## Project structure
+- **Backend (pytest):**
+  - upload and provider validation, DST-correct dates and the session calendar
+  - feature causality, purging, and validation/calibration not depending on test prices
+  - consistency across horizons, export parity with the API, stale-data rejection (`409`)
+  - caching and outage fallbacks, upload safety, the return to provider data
+  - the Alpaca client: pagination, error mapping, cache, and key values never appearing in any response
+- **Browser (`e2e/`, Chrome via `playwright-core`), against the production build:**
+  - the full forecast flow, export vs the displayed values, refresh, and valid and invalid uploads
+  - provider failure with and without a cache, and a news outage
+  - the GLD tab with and without keys, and keyboard operation
+  - layout, overflow, touch-target and contrast checks at 1440, 768 and 390 px
+
+</details>
+
+## Repository map
 
 | Path | Contents |
 |---|---|
-| `backend/app/` | `data.py` ingestion, validation and cache; `features.py`; `model.py` models and evaluation; `sessions.py` calendar; `news.py`; `alpaca.py` optional GLD data; `main.py` API. |
-| `backend/tests/` | pytest suite. |
-| `frontend/src/` | `App.tsx` state and layout; `components/` market strip, chart, forecast panel, research tabs; `styles.css`. |
-| `e2e/` | Browser end-to-end checks and the runner. |
-| `docs/screenshots/` | Screenshots used above, produced by the browser checks. |
-| `start.sh` | Install, build and run in one command. |
+| [`backend/app/`](backend/app) | `data.py` ingestion, validation and cache · `features.py` · `model.py` models and evaluation · `sessions.py` calendar · `news.py` · `alpaca.py` optional GLD · `main.py` API |
+| [`backend/tests/`](backend/tests) | pytest suite |
+| [`frontend/src/`](frontend/src) | `App.tsx` state and layout · `components/` market strip, chart, forecast panel, research tabs · `styles.css` |
+| [`e2e/`](e2e) | browser end-to-end checks and runner |
+| [`docs/screenshots/`](docs/screenshots) | images used in this README, captured from the running app |
+| [`start.sh`](start.sh) | install, build and run in one command |
+
+Dependencies are pinned in `backend/requirements.txt` (full lock: `backend/requirements.lock`) and `frontend/package-lock.json`.
 
 ## Research notes
 
-- The selected models do not show a measured advantage over the unchanged-price baseline. The forecast numbers are model outputs, not evidence of skill, and nothing here is a trading signal or a performance claim.
-- One split per horizon is one sample of history. Different test periods can give different results.
-- The volatility scaling of the range was introduced after fixed-width ranges covered only 71%, 64% and 42% of test outcomes (1, 5, 20 sessions), so the test year informed that design choice. As an out-of-time check at implementation, the same procedure applied to history ending 250 and 500 sessions earlier gave 74% / 67% / 64% and 82% / 88% / 93% coverage, so coverage varies widely by period.
-- Direction classifiers (logistic regression, random forest) were also tried on the same split. At 20 sessions they scored 75–78% on validation and 46–47% on the untouched test period, because gold trended up through the validation window. They were not adopted.
-- The range is asymmetric when validation errors are skewed, as at 20 sessions, where validation errors were mostly positive.
-- Headline themes are keyword matches. The explanatory sentences are general background written for this application, not statements from the articles.
-- The brief suggested [brianrisk/Stock-Prediction-Neural-Network-and-Machine-Learning-Examples](https://github.com/brianrisk/Stock-Prediction-Neural-Network-and-Machine-Learning-Examples) as a simple reference. I only checked its licence (Apache-2.0 per the GitHub API); I did not read or reuse its code.
+- The forecasts are model outputs, not trading signals. Nothing here claims or implies profitable trading.
+- One chronological split is one draw from history. A different test year can give a different verdict.
+- Volatility scaling of the range was adopted after fixed-width ranges under-covered on test (71% / 64% / 42%), so the test year informed that design choice. On history ending 250 and 500 sessions earlier, the same procedure gave 74% / 67% / 64% and 82% / 88% / 93% coverage, so coverage depends on the period.
+- Direction classifiers (logistic regression, random forest) were also tried. At 20 sessions they reached 75–78% on validation and 46–47% on test, because gold trended up through the validation window. They were not adopted.
+- The 20-session range is asymmetric because the validation errors were skewed. The method keeps that skew rather than forcing a symmetric range.
 
-Dependencies are pinned in `backend/requirements.txt` (full lock in `backend/requirements.lock`) and `frontend/package-lock.json`.
+## Contributing & licence
+
+This is a personal research project. Issues and suggestions are welcome; for larger changes, open an issue first. Please run the backend tests and `npm run build` before proposing changes.
+
+**No licence has been chosen yet.** Until one is added, default copyright applies: you may read the code, but reuse and redistribution need permission. Third-party dependencies remain under their own licences.
+
+Market data comes from Yahoo Finance and, optionally, Alpaca, and headlines from Google News. Each source is subject to its own terms of use.
