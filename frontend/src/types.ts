@@ -41,9 +41,11 @@ export interface Prediction {
     effective_n: number;
     methods: Record<MethodKey, MethodResult>;
     always_up_pct: number;
+    within_tolerance: Record<string, Record<MethodKey | "default", number>>;
     advantage: boolean;
     verdict: string;
   };
+  training: { closes: number; first_close: string; last_close: string; usable_samples: number; n_features: number };
   splits: Record<"train" | "validation" | "test", { start: string; end: string; n: number }>;
   test_series: { date: string; actual: number; predicted: number; baseline: number }[];
   features: { name: string; label: string }[];

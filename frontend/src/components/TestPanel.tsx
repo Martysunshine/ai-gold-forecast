@@ -51,8 +51,8 @@ export function TestPanel({ p }: { p: Prediction }) {
           <YAxis domain={domain} orientation="right" width={56} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
           <Tooltip content={<Tip />} cursor={{ stroke: "var(--muted)", strokeDasharray: "3 3" }} isAnimationActive={false} />
           <Line dataKey="baseline" stroke="var(--muted)" strokeWidth={1.5} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
-          <Line dataKey="actual" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} />
-          <Line dataKey="predicted" stroke="var(--ivory)" strokeWidth={2} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
+          <Line dataKey="actual" stroke="var(--line-main)" strokeWidth={2} dot={false} isAnimationActive={false} />
+          <Line dataKey="predicted" stroke="var(--accent-strong)" strokeWidth={2} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
       <p className="foot-note">Each point is plotted at the date being predicted: the model sees prices up to {p.horizon} {p.horizon === 1 ? "session" : "sessions"} earlier. The dotted baseline is therefore the price {p.horizon} {p.horizon === 1 ? "session" : "sessions"} before.</p>

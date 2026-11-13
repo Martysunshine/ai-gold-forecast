@@ -84,14 +84,14 @@ export function PriceChart({ prices, prediction }: { prices: PricePayload; predi
               tickFormatter={(t: number) => fmtTs(t, range === "5Y" ? { month: "short", year: "2-digit" } : { day: "numeric", month: "short" })} />
             <YAxis domain={domain} orientation="right" width={56} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
             <Tooltip content={<Tip />} cursor={{ stroke: "var(--muted)", strokeDasharray: "3 3" }} isAnimationActive={false} />
-            {fcT !== null && <ReferenceArea x1={lastT} x2={fcT} fill="var(--gold)" fillOpacity={0.05} stroke="none" />}
+            {fcT !== null && <ReferenceArea x1={lastT} x2={fcT} fill="var(--accent)" fillOpacity={0.05} stroke="none" />}
             {fcT !== null && <ReferenceLine x={lastT} stroke="var(--line-soft)" strokeDasharray="3 3" label={{ value: "forecast →", position: "insideTopRight", fill: "var(--muted)", fontSize: 12 }} />}
-            <Area dataKey="band" stroke="none" fill="var(--gold)" fillOpacity={0.2} isAnimationActive={false} connectNulls />
-            <Line dataKey="close" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} activeDot={{ r: 4, stroke: "var(--surface)", strokeWidth: 2 }} />
-            <Line dataKey="fc" stroke="var(--ivory)" strokeWidth={2} strokeDasharray="5 4" connectNulls isAnimationActive={false}
+            <Area dataKey="band" stroke="none" fill="var(--accent)" fillOpacity={0.5} isAnimationActive={false} connectNulls />
+            <Line dataKey="close" stroke="var(--line-main)" strokeWidth={2} dot={false} isAnimationActive={false} activeDot={{ r: 4, stroke: "var(--surface)", strokeWidth: 2 }} />
+            <Line dataKey="fc" stroke="var(--accent-strong)" strokeWidth={2} strokeDasharray="5 4" connectNulls isAnimationActive={false}
               dot={(p: { cx?: number; cy?: number; payload?: Row; index?: number }) =>
                 p.payload?.isForecast && p.cx !== undefined && p.cy !== undefined
-                  ? <circle key={p.index} cx={p.cx} cy={p.cy} r={6} fill="var(--ivory)" stroke="var(--ivory)" strokeWidth={2} />
+                  ? <circle key={p.index} cx={p.cx} cy={p.cy} r={6} fill="var(--accent-strong)" stroke="var(--accent-strong)" strokeWidth={2} />
                   : <g key={p.index} />} />
           </ComposedChart>
         </ResponsiveContainer>
