@@ -1,5 +1,5 @@
 {
-  "name": "gold-outlook-e2e",
+  "name": "ai-gold-forecast-e2e",
   "private": true,
   "type": "module",
   "description": "Browser end-to-end checks (Chrome via playwright-core; no browser download).",

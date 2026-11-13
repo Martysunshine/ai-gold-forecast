@@ -92,29 +92,29 @@ export function PriceChart({ prices, result }: { prices: PricePayload; result: P
           <ComposedChart data={m.rows} margin={{ top: 8, right: 4, bottom: 2, left: 4 }}
             onMouseMove={(s: { activePayload?: { payload: Row }[] }) => { const r = s?.activePayload?.[0]?.payload; if (r) setHover((h) => (h?.t === r.t ? h : r)); }}
             onMouseLeave={() => setHover(null)}>
-            <CartesianGrid stroke="var(--grid)" vertical={false} />
-            <XAxis dataKey="t" type="number" scale="time" domain={[m.firstT, m.endT]} ticks={ticks} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--border)"
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} tickFormatter={(t: number) => fmtTs(t, dateFmt)} interval={0} />
+            <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
+            <XAxis dataKey="t" type="number" scale="time" domain={[m.firstT, m.endT]} ticks={ticks} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--chart-axis)"
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} tickFormatter={(t: number) => fmtTs(t, dateFmt)} interval={0} />
             <YAxis domain={m.domain} ticks={m.yTicks} orientation="right" width={58} axisLine={false} tickLine={false} allowDecimals={false}
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
             <Tooltip content={<Tip />} cursor={false} isAnimationActive={false} />
-            {shown && <ReferenceLine x={shown.t} stroke="var(--muted)" strokeDasharray="2 3" />}
-            {shown && <ReferenceLine y={shown.close} stroke="var(--muted)" strokeDasharray="2 3" />}
+            {shown && <ReferenceLine x={shown.t} stroke="var(--ink-3)" strokeDasharray="2 3" />}
+            {shown && <ReferenceLine y={shown.close} stroke="var(--ink-3)" strokeDasharray="2 3" />}
             {result && m.targetT !== null && (
               <>
-                <ReferenceArea x1={m.lastT} x2={m.endT} fill="var(--blue)" fillOpacity={0.04} stroke="none" />
+                <ReferenceArea x1={m.lastT} x2={m.endT} fill="var(--forecast)" fillOpacity={0.04} stroke="none" />
                 <ReferenceArea x1={m.targetT - m.pad} x2={m.targetT + m.pad} y1={result.forecast.interval.low} y2={result.forecast.interval.high}
-                  fill="var(--blue)" fillOpacity={0.2} stroke="var(--blue)" strokeOpacity={0.7} strokeWidth={1} />
-                <ReferenceLine x={m.lastT} stroke="var(--blue)" strokeOpacity={0.7} strokeDasharray="4 3"
-                  label={{ value: `origin ${fmtTs(m.lastT, { day: "2-digit", month: "short" })}`, position: "insideTopRight", fill: "var(--blue)", fontSize: 11, fontFamily: "var(--mono)" }} />
+                  fill="var(--forecast)" fillOpacity={0.2} stroke="var(--forecast)" strokeOpacity={0.7} strokeWidth={1} />
+                <ReferenceLine x={m.lastT} stroke="var(--forecast)" strokeOpacity={0.7} strokeDasharray="4 3"
+                  label={{ value: `origin ${fmtTs(m.lastT, { day: "2-digit", month: "short" })}`, position: "insideTopRight", fill: "var(--accent-ink)", fontSize: 12, fontFamily: "var(--font)" }} />
               </>
             )}
-            <Line dataKey="close" stroke="var(--gold)" strokeWidth={1.6} dot={false} isAnimationActive={false} activeDot={{ r: 3.5, fill: "var(--gold)", stroke: "var(--surface)", strokeWidth: 2 }} />
-            <Line dataKey="fc" stroke="var(--blue)" strokeWidth={1.6} strokeDasharray="5 4" connectNulls isAnimationActive={false} activeDot={false}
+            <Line dataKey="close" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} activeDot={{ r: 3.5, fill: "var(--gold)", stroke: "var(--surface)", strokeWidth: 2 }} />
+            <Line dataKey="fc" stroke="var(--forecast)" strokeWidth={2} strokeDasharray="5 4" connectNulls isAnimationActive={false} activeDot={false}
               dot={(p: { cx?: number; cy?: number; payload?: Row; index?: number }) => {
                 if (p.cx === undefined || p.cy === undefined || !p.payload) return <g key={p.index} />;
-                if (p.payload.target) return <rect key={p.index} x={p.cx - 4} y={p.cy - 4} width={8} height={8} fill="var(--blue)" />;
-                return p.payload.fc !== undefined ? <circle key={p.index} cx={p.cx} cy={p.cy} r={3.5} fill="var(--surface)" stroke="var(--blue)" strokeWidth={1.6} /> : <g key={p.index} />;
+                if (p.payload.target) return <rect key={p.index} x={p.cx - 4} y={p.cy - 4} width={8} height={8} fill="var(--forecast)" />;
+                return p.payload.fc !== undefined ? <circle key={p.index} cx={p.cx} cy={p.cy} r={3.5} fill="var(--surface)" stroke="var(--forecast)" strokeWidth={1.6} /> : <g key={p.index} />;
               }} />
           </ComposedChart>
         </ResponsiveContainer></div>

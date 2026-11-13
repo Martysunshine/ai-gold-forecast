@@ -57,7 +57,7 @@ export interface Prediction {
     verdict: string;
   };
   training: { closes: number; first_close: string; last_close: string; usable_samples: number; n_features: number };
-  calendar: { name: string; library: string; rule: string };
+  calendar: { name: string; library: string; rule: string; check: { observed_bars: number; rule_sessions: number; rule_sessions_without_bar: number; bars_not_in_rule: number } };
   splits: Record<"train" | "validation" | "test", Span>;
   test_series: { date: string; actual: number; predicted: number; baseline: number }[];
   features: { name: string; label: string }[];

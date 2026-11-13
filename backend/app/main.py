@@ -18,7 +18,7 @@ from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
 
-app = FastAPI(title="Gold Outlook API", version="0.2.0")
+app = FastAPI(title="AI Gold Forecast API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 store = DataStore()
@@ -202,7 +202,7 @@ def download_prediction(horizon: int = 5, key: str | None = None):
 GLD_SETUP = [
     "Create a free Alpaca account and generate paper-trading or market-data API keys.",
     "Copy .env.example to .env in the repository root and set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY.",
-    "Restart ./start.sh. Only market data is read; no orders are placed.",
+    "Restart the app (start.cmd on Windows, ./start.sh on macOS and Linux). Only market data is read; no orders are placed.",
 ]
 GLD_NOTE = "GLD is an exchange-traded fund, not the futures contract. Shown for comparison only; not used by the forecast."
 

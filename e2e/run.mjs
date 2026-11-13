@@ -1,4 +1,4 @@
-// Browser end-to-end checks. Run through e2e/run.sh (it starts the three servers this script expects).
+// Browser end-to-end checks. Run through e2e/run.sh or e2e\run.cmd (they start the three servers this script expects).
 import { chromium } from "playwright-core";
 import fs from "node:fs";
 
@@ -7,6 +7,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const results = [];
 const check = (name, ok, detail = "") => { results.push({ name, ok: !!ok }); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true });
+// Screenshots: 01-04, gld and forecast-* are the light theme; theme-light and theme-dark show both. README images come from shots.mjs.
 
 async function open(viewport, url, setup) {
   const ctx = await browser.newContext({ viewport, acceptDownloads: true });
@@ -40,7 +41,8 @@ let originalPrice;
   const { ctx, page, errors, bad, predictCalls, predictBodies } = await open({ width: 1440, height: 900 }, LIVE);
   await page.waitForSelector('[data-testid="latest-price"]', { timeout: 30000 });
   originalPrice = money(await txt(page, "latest-price"));
-  check("1440: top bar has wordmark, GC=F / COMEX, status and refresh time", /Gold Outlook/.test(await page.textContent(".wordmark")) && /GC=F \/ COMEX/.test(await page.textContent(".sym")) && /Live/.test(await txt(page, "data-status")) && /\d{2}:\d{2}/.test(await txt(page, "refresh-time")), await txt(page, "refresh-time"));
+  const api0 = await (await fetch(`${LIVE}/api/prices`)).json();
+  check("1440: top bar has wordmark, GC=F / COMEX, status and refresh time", /AI Gold Forecast/.test(await page.textContent(".wordmark")) && (await page.locator(".brand img.mark").evaluate((i) => i.complete && i.naturalWidth > 0)) && /GC=F \/ COMEX/.test(await page.textContent(".sym")) && /Live/.test(await txt(page, "data-status")) && /\d{2}:\d{2}/.test(await txt(page, "refresh-time")), await txt(page, "refresh-time"));
   check("1440: market strip shows close, change, observation date, realised vol",
     originalPrice > 500 && /[▲▼]/.test(await txt(page, "session-change")) && /20\d\d/.test(await txt(page, "obs-date")) && /%/.test(await txt(page, "realised-vol")),
     `${originalPrice} | ${await txt(page, "session-change")} | ${await txt(page, "obs-date")} | vol ${await txt(page, "realised-vol")}`);
@@ -127,7 +129,21 @@ let originalPrice;
   check("context: headline rows have publisher, timestamp and source link; states news is not a model input", links.length >= 5 && /\d{2}:\d{2}/.test(links[0][1]) && /not.*input to the numerical forecast/i.test(await txt(page, "news-note")), `${links.length} rows`);
   await page.click('[data-testid="tab-method"]');
   const heads = await page.locator('[data-testid="methodology"] h3').allTextContents();
-  check("methodology: data, features, evaluation, calendar, uncertainty sections", JSON.stringify(heads) === JSON.stringify(["Data", "Features and target", "Evaluation", "Calendar", "Uncertainty"]), heads.join(", "));
+  check("methodology: seven stages from data to calendar", JSON.stringify(heads) === JSON.stringify(["Data", "Features and target", "Split", "Model choice", "Test", "Range", "Calendar"]), heads.join(", "));
+  // The walk-through must show the numbers of the run on screen (the 20-session forecast), not text written down once.
+  const b20 = apiBodies[20], m20 = b20.test.methods[b20.forecast.model];
+  check("methodology: stages carry the numbers of the forecast on screen (split, model choice, test, range)",
+    /20-session forecast on screen/.test(await txt(page, "method-intro"))
+      && (await txt(page, "method-split")).includes(`n=${b20.splits.train.n}`) && (await txt(page, "method-split")).includes(`n=${b20.splits.test.n}`)
+      && (await txt(page, "method-choice")).includes(`Selected ${b20.forecast.model_label}`) && (await txt(page, "method-choice")).includes(fmtUsd(b20.selection.validation_mae[b20.forecast.model]))
+      && (await txt(page, "method-test")).includes(fmtUsd(m20.mae)) && (await txt(page, "method-test")).includes(fmtUsd(b20.test.methods.unchanged.mae))
+      && (await txt(page, "method-verdict")).includes(b20.test.verdict)
+      && (await txt(page, "method-range")).includes(`Observed on test ${b20.forecast.interval.observed_coverage_pct.toFixed(0)}%`),
+    (await txt(page, "method-verdict")).slice(0, 70));
+  const chk = b20.calendar.check;
+  check("methodology: calendar check is computed from the active data", chk.observed_bars === api0.count && chk.rule_sessions > 1000
+    && (await txt(page, "method-calendar")).includes(`Rule sessions ${chk.rule_sessions.toLocaleString("en-US")}`) && (await txt(page, "method-calendar")).includes(`Bars outside the rule ${chk.bars_not_in_rule}`),
+    `${chk.rule_sessions} rule sessions, ${chk.rule_sessions_without_bar} without a bar, ${chk.bars_not_in_rule} bars outside the rule`);
   await page.screenshot({ path: `${OUT}/03-methodology-1440.png` });
 
   // refresh keeps valid results when the data did not change
@@ -266,13 +282,64 @@ for (const [w, h] of [[768, 1024], [390, 844]]) {
   await ctx.close();
 }
 
-// ============================== contrast (design tokens) ==============================
-{
-  const bg = "#080A0C", surf = "#11151A";
-  const pairs = [["muted on surface", "#929CAA", surf], ["text on surface", "#E9EDF2", surf], ["blue on surface", "#66ACFF", surf], ["gold on surface", "#D6B878", surf], ["green on surface", "#4FA77B", surf], ["red on surface", "#D2685F", surf], ["primary button text", "#04101C", "#66ACFF"], ["credits text on bg", "#7C8795", bg]];
-  const low = pairs.filter(([, f, b]) => ratio(f, b) < 4.5).map(([n, f, b]) => `${n} ${ratio(f, b).toFixed(2)}`);
-  check("contrast: all text/background pairs >= 4.5:1", low.length === 0, low.length ? low.join("; ") : pairs.map(([n, f, b]) => `${ratio(f, b).toFixed(1)}`).join(" "));
+// ============================== light and dark themes: tokens and rendered text contrast ==============================
+// Runs in the page. Walks every visible element that holds text, composites its colour over the backgrounds behind it
+// and returns the pairs below WCAG AA (4.5:1, or 3:1 for large text). Measured on the page, not on a list of constants.
+const auditText = () => {
+  const parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return null; const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };
+  const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+  const lum = ({ r, g, b }) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  const backdrop = (el) => {
+    const layers = [];
+    for (let e = el; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c && c.a > 0) { layers.push(c); if (c.a === 1) break; } }
+    let base = parse(getComputedStyle(document.documentElement).backgroundColor);
+    if (!base || base.a === 0) base = matchMedia("(prefers-color-scheme: dark)").matches ? { r: 0, g: 0, b: 0, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
+    for (const c of layers.reverse()) base = over(c, base);
+    return base;
+  };
+  const faded = (el) => { for (let e = el; e; e = e.parentElement) { if (parseFloat(getComputedStyle(e).opacity) < 1) return true; } return false; };
+  const low = [];
+  let n = 0;
+  for (const el of document.querySelectorAll("body *")) {
+    if (el.closest("svg") || el.closest(".sr") || el.closest(".info-tip")) continue;
+    if (![...el.childNodes].some((x) => x.nodeType === 3 && x.textContent.trim())) continue;
+    const box = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (!box.width || !box.height || cs.visibility === "hidden" || faded(el)) continue;
+    const bg = backdrop(el), fg = over(parse(cs.color), bg);
+    const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+    const ratio = (hi + 0.05) / (lo + 0.05), size = parseFloat(cs.fontSize), large = size >= 24 || (size >= 18.66 && parseInt(cs.fontWeight, 10) >= 700);
+    n += 1;
+    if (ratio < (large ? 3 : 4.5)) low.push(`${ratio.toFixed(2)} ${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.trim().split(/\s+/).join(".") : ""} "${el.textContent.trim().slice(0, 24)}"`);
+  }
+  return { n, low: [...new Set(low)] };
+};
+const themeBg = {};
+for (const scheme of ["light", "dark"]) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: scheme });
+  const page = await ctx.newPage();
+  await page.goto(LIVE);
+  await page.waitForSelector('[data-testid="latest-price"]', { timeout: 30000 });
+  const names = ["--bg", "--surface", "--surface-2", "--float", "--ink", "--ink-2", "--accent-ink", "--gold-ink", "--gain", "--loss", "--on-accent", "--accent-fill"];
+  const tok = await page.evaluate((ns) => { const s = getComputedStyle(document.documentElement); return Object.fromEntries(ns.map((k) => [k, s.getPropertyValue(k).trim()])); }, names);
+  themeBg[scheme] = tok["--bg"];
+  const pairs = [["text on card", "--ink", "--surface"], ["secondary text on card", "--ink-2", "--surface"], ["secondary text on page", "--ink-2", "--bg"], ["secondary text on inset", "--ink-2", "--surface-2"],
+    ["text on tooltip", "--ink", "--float"], ["secondary text on tooltip", "--ink-2", "--float"], ["link on card", "--accent-ink", "--surface"], ["gold text on card", "--gold-ink", "--surface"],
+    ["gain on card", "--gain", "--surface"], ["loss on card", "--loss", "--surface"], ["primary button text", "--on-accent", "--accent-fill"]];
+  const lowTok = pairs.filter(([, f, b]) => ratio(tok[f], tok[b]) < 4.5).map(([n, f, b]) => `${n} ${ratio(tok[f], tok[b]).toFixed(2)}`);
+  check(`${scheme} theme: design-token text pairs >= 4.5:1`, lowTok.length === 0, lowTok.length ? lowTok.join("; ") : pairs.map(([, f, b]) => ratio(tok[f], tok[b]).toFixed(1)).join(" "));
+  await runForecast(page, 5);
+  const audits = [];
+  for (const t of ["backtest", "context", "gld", "method"]) {
+    await page.click(`[data-testid="tab-${t}"]`);
+    await page.waitForSelector({ backtest: '[data-testid="backtest"]', context: '[data-testid="news"], .error-block', gld: '[data-testid="gld-setup"]', method: '[data-testid="method-verdict"]' }[t], { timeout: 30000 });
+    audits.push(await page.evaluate(auditText));
+  }
+  const lowText = [...new Set(audits.flatMap((a) => a.low))];
+  check(`${scheme} theme: rendered text meets WCAG AA on every tab`, lowText.length === 0 && audits.every((a) => a.n > 40), lowText.length ? lowText.slice(0, 6).join(" | ") : `${audits.reduce((s, a) => s + a.n, 0)} text elements measured`);
+  await page.screenshot({ path: `${OUT}/theme-${scheme}-1440.png`, fullPage: true });
+  await ctx.close();
 }
+check("themes: the page follows the system colour scheme", themeBg.light === "#f5f5f7" && themeBg.dark === "#000000", `${themeBg.light} / ${themeBg.dark}`);
 
 await browser.close();
 const failed = results.filter((r) => !r.ok);

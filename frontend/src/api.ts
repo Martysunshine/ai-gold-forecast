@@ -13,7 +13,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(path, init);
   } catch {
-    throw new ApiError("network", "Cannot reach the Gold Outlook API. Is the backend running?");
+    throw new ApiError("network", "Cannot reach the AI Gold Forecast API. Is the backend running?");
   }
   if (!res.ok) {
     let code = "http_" + res.status;

@@ -142,7 +142,7 @@ export default function App() {
           </section>
         )}
 
-        <footer className="credits mono">Gold Outlook · prices: Yahoo Finance (GC=F, COMEX gold futures) · headlines: Google News RSS · headlines are not a model input</footer>
+        <footer className="credits">AI Gold Forecast · prices: Yahoo Finance (GC=F, COMEX gold futures) · headlines: Google News RSS · headlines are not a model input · forecasts are model outputs, not trading signals</footer>
       </main>
     </div>
   );

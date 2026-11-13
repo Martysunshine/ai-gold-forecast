@@ -2,8 +2,10 @@
 #   .\e2e\run.cmd                          -> uses the Chrome (or Edge) installed on this machine
 #   set CHROME_PATH=C:\path\to\chrome.exe  -> another browser
 #   set SHOTS=docs\screenshots             -> keep the screenshots there
+#   .\e2e\run.cmd -Script shots.mjs        -> retake the README screenshots instead of running the checks
 # Starts three throw-away servers on ports 8743-8745: live data, offline with a seeded cache, offline with no data.
 # The servers run without Alpaca keys, so the GLD tab is checked in its "not configured" state.
+param([string]$Script = 'run.mjs')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
@@ -90,7 +92,7 @@ try {
         $env:OUT = Join-Path $tmp 'shots'
     }
     Push-Location -LiteralPath (Join-Path $root 'e2e')
-    try { & node run.mjs; $code = $LASTEXITCODE } finally { Pop-Location }
+    try { & node $Script; $code = $LASTEXITCODE } finally { Pop-Location }
 } finally {
     # Stop each server together with its child interpreter, then remove the temporary data.
     foreach ($s in $servers) { if ($s -and -not $s.HasExited) { & taskkill.exe /PID $s.Id /T /F 2>&1 | Out-Null } }

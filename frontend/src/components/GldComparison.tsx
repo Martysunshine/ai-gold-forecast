@@ -77,14 +77,14 @@ export function GldComparison() {
       <div className="chart-box short" ref={boxRef} role="img" aria-label={`GC=F and GLD indexed to 100 from ${fmtDate(c.start)} to ${fmtDate(c.end)}. Return correlation ${w.return_correlation.toFixed(2)}.`}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={rows} margin={{ top: 8, right: 4, bottom: 2, left: 4 }}>
-            <CartesianGrid stroke="var(--grid)" vertical={false} />
-            <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} ticks={ticks} interval={0} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--border)"
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} tickFormatter={(v: number) => fmtTs(v, { month: "short", year: "2-digit" })} />
+            <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
+            <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} ticks={ticks} interval={0} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--chart-axis)"
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} tickFormatter={(v: number) => fmtTs(v, { month: "short", year: "2-digit" })} />
             <YAxis domain={axis.domain} ticks={axis.ticks} orientation="right" width={48} axisLine={false} tickLine={false}
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} />
-            <Tooltip content={<Tip />} cursor={{ stroke: "var(--muted)", strokeDasharray: "2 3" }} isAnimationActive={false} />
-            <Line dataKey="gld" stroke="var(--muted)" strokeWidth={1.4} dot={false} isAnimationActive={false} />
-            <Line dataKey="gc" stroke="var(--gold)" strokeWidth={1.6} dot={false} isAnimationActive={false} />
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} />
+            <Tooltip content={<Tip />} cursor={{ stroke: "var(--ink-3)", strokeDasharray: "2 3" }} isAnimationActive={false} />
+            <Line dataKey="gld" stroke="var(--ink-3)" strokeWidth={1.4} dot={false} isAnimationActive={false} />
+            <Line dataKey="gc" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

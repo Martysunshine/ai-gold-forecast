@@ -56,15 +56,15 @@ export function Backtest({ result, horizon }: { result: Prediction | null; horiz
       <div className="chart-box short" ref={boxRef} role="img" aria-label={`Backtest: actual versus predicted ${result.horizon}-session-ahead price, ${fmtDate(t.period.start)} to ${fmtDate(t.period.end)}`}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={rows} margin={{ top: 8, right: 4, bottom: 2, left: 4 }}>
-            <CartesianGrid stroke="var(--grid)" vertical={false} />
-            <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} ticks={ticks} interval={0} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--border)"
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} tickFormatter={(v: number) => fmtTs(v, { month: "short", year: "2-digit" })} />
+            <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
+            <XAxis dataKey="t" type="number" scale="time" domain={["dataMin", "dataMax"]} ticks={ticks} interval={0} padding={{ left: 26, right: 0 }} tickLine={false} stroke="var(--chart-axis)"
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} tickFormatter={(v: number) => fmtTs(v, { month: "short", year: "2-digit" })} />
             <YAxis domain={axis.domain} ticks={axis.ticks} orientation="right" width={58} axisLine={false} tickLine={false} allowDecimals={false}
-              tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
-            <Tooltip content={<Tip />} cursor={{ stroke: "var(--muted)", strokeDasharray: "2 3" }} isAnimationActive={false} />
-            <Line dataKey="baseline" stroke="var(--muted)" strokeWidth={1.2} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
-            <Line dataKey="actual" stroke="var(--gold)" strokeWidth={1.6} dot={false} isAnimationActive={false} />
-            <Line dataKey="predicted" stroke="var(--blue)" strokeWidth={1.4} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
+              tick={{ fill: "var(--ink-2)", fontSize: 12, fontFamily: "var(--font)" }} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
+            <Tooltip content={<Tip />} cursor={{ stroke: "var(--ink-3)", strokeDasharray: "2 3" }} isAnimationActive={false} />
+            <Line dataKey="baseline" stroke="var(--ink-3)" strokeWidth={1.2} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
+            <Line dataKey="actual" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line dataKey="predicted" stroke="var(--forecast)" strokeWidth={1.8} strokeDasharray="5 4" dot={false} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

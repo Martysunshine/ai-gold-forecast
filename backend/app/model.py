@@ -28,7 +28,7 @@ from sklearn.preprocessing import StandardScaler
 
 from . import config
 from .features import FEATURE_LABELS, FEATURE_NAMES, build_features, build_target
-from .sessions import describe as calendar_description, next_sessions
+from .sessions import describe as calendar_description, next_sessions, verify as verify_calendar
 
 TRAIN_FRAC, VAL_FRAC = 0.6, 0.2
 INTERVAL_LEVEL = 0.80
@@ -62,6 +62,17 @@ def _direction(pred_ret: np.ndarray, actual_ret: np.ndarray) -> float:
 def target_date(last: pd.Timestamp, horizon: int) -> str:
     """Date of the ``horizon``-th daily bar after ``last`` (see sessions.py for the calendar rule)."""
     return next_sessions(last, horizon)[-1].date().isoformat()
+
+
+def calendar_check(close: pd.Series) -> dict:
+    """How well the session rule matches the bars actually present in ``close`` (counts; sessions.verify lists the dates)."""
+    v = verify_calendar(close)
+    return {
+        "observed_bars": v["observed_bars"],
+        "rule_sessions": v["rule_sessions"],
+        "rule_sessions_without_bar": len(v["rule_sessions_without_bar"]),
+        "bars_not_in_rule": len(v["bars_not_in_rule"]),
+    }
 
 
 def split_positions(pos: np.ndarray, h: int, n: int):
@@ -212,7 +223,7 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         },
         "training": {"closes": int(len(close)), "first_close": close.index[0].date().isoformat(), "last_close": close.index[-1].date().isoformat(),
                      "usable_samples": int(n), "n_features": len(FEATURE_NAMES), "final_fit_samples": int(n)},
-        "calendar": calendar_description(),
+        "calendar": {**calendar_description(), "check": calendar_check(close)},
         "splits": {"train": span(train), "validation": span(val), "test": span(test)},
         "test_series": test_series,
         "features": [{"name": k, "label": v} for k, v in FEATURE_LABELS.items()],
