@@ -131,3 +131,27 @@ def test_accuracy_fields_are_consistent(series):
     tr = out["training"]
     assert tr["closes"] == len(series) and tr["n_features"] == len(FEATURE_NAMES)
     assert out["splits"]["train"]["n"] + out["splits"]["validation"]["n"] + out["test"]["n"] <= tr["usable_samples"]
+
+
+def test_range_calibration_never_uses_test_period_outcomes(series):
+    """The calibrated quantiles (and calibration/evaluation spans) must not change when test-period prices change."""
+    base = model.run_prediction(series, 5)
+    cut = base["splits"]["test"]["start"]
+    altered = series.copy()
+    mask = altered.index >= pd.Timestamp(cut)
+    altered[mask] *= np.random.default_rng(9).uniform(0.4, 2.5, mask.sum())
+    alt = model.run_prediction(altered, 5)
+    a, b = base["forecast"]["interval"], alt["forecast"]["interval"]
+    assert a["z_low"] == pytest.approx(b["z_low"]) and a["z_high"] == pytest.approx(b["z_high"])
+    assert a["calibrated_on"] == b["calibrated_on"]
+    # calibration window ends strictly before the evaluation window begins
+    assert a["calibrated_on"]["end"] < a["evaluated_on"]["start"]
+
+
+@pytest.mark.parametrize("h", [1, 5, 20])
+def test_target_date_matches_session_calendar(series, h):
+    from app.sessions import next_sessions
+
+    out = model.run_prediction(series, h)
+    assert out["target_date"] == next_sessions(series.index[-1], h)[-1].date().isoformat()
+    assert out["calendar"]["name"].startswith("CMEGlobex_Gold")

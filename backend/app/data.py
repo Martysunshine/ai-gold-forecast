@@ -8,6 +8,7 @@ Design rules:
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -241,80 +242,134 @@ class Dataset:
     meta: dict
 
     @property
-    def fingerprint(self) -> str:
-        return f"{self.meta.get('source_kind')}|{self.series.index[-1].date()}|{len(self.series)}|{self.series.iloc[-1]:.4f}"
+    def key(self) -> str:
+        """Identity of the data: changes whenever any date or value changes (used to tie results to data)."""
+        h = hashlib.sha1()
+        h.update(str(self.meta.get("source_kind")).encode())
+        h.update(self.series.index.values.astype("datetime64[D]").tobytes())
+        h.update(np.round(self.series.to_numpy(dtype=float), 4).tobytes())
+        return h.hexdigest()[:12]
+
+    @property
+    def fingerprint(self) -> str:  # backwards-compatible alias
+        return self.key
 
 
 class DataStore:
+    """Two on-disk slots ("provider", "upload") and a pointer to the active one.
+
+    * An invalid upload is rejected *before* anything is written, so the active data is never disturbed.
+    * A failed refresh never replaces data: the last valid dataset is returned with ``provider_error`` set and its
+      original ``fetched_at`` so callers can show its age.
+    * ``use_provider()`` switches from an upload back to provider data (live, or the saved provider copy).
+    """
+
     def __init__(self, directory: Path | None = None, fetcher=fetch_yahoo):
         self.dir = Path(directory or config.DATA_DIR)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._csv = self.dir / "active.csv"
-        self._meta = self.dir / "active.json"
+        self._state = self.dir / "state.json"
         self._fetcher = fetcher
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     # -- persistence --------------------------------------------------------
-    def _load(self) -> Dataset | None:
-        if not (self._csv.exists() and self._meta.exists()):
+    def _paths(self, slot: str):
+        return self.dir / f"{slot}.csv", self.dir / f"{slot}.json"
+
+    def _load(self, slot: str) -> Dataset | None:
+        csv_path, meta_path = self._paths(slot)
+        if not (csv_path.exists() and meta_path.exists()):
             return None
         try:
-            meta = json.loads(self._meta.read_text())
-            df = pd.read_csv(self._csv, parse_dates=["Date"])
+            meta = json.loads(meta_path.read_text())
+            df = pd.read_csv(csv_path, parse_dates=["Date"])
             series = pd.Series(df["Close"].to_numpy(dtype=float), index=pd.DatetimeIndex(df["Date"]), name="close")
             return Dataset(series, meta)
-        except Exception:  # noqa: BLE001 - a corrupt cache is treated as no cache
+        except Exception:  # noqa: BLE001 - a corrupt slot is treated as empty
             return None
 
-    def _save(self, series: pd.Series, meta: dict) -> Dataset:
-        tmp = self._csv.with_suffix(".tmp")
+    def _save(self, slot: str, series: pd.Series, meta: dict) -> Dataset:
+        csv_path, meta_path = self._paths(slot)
+        tmp = csv_path.with_suffix(".tmp")
         pd.DataFrame({"Date": series.index.strftime("%Y-%m-%d"), "Close": series.to_numpy()}).to_csv(tmp, index=False)
-        tmp.replace(self._csv)
-        self._meta.write_text(json.dumps(meta, indent=2))
+        tmp.replace(csv_path)
+        meta_path.write_text(json.dumps(meta, indent=2))
         return Dataset(series, meta)
+
+    def _active(self) -> str:
+        try:
+            return json.loads(self._state.read_text()).get("active", "provider")
+        except Exception:  # noqa: BLE001
+            return "provider"
+
+    def _set_active(self, slot: str) -> None:
+        self._state.write_text(json.dumps({"active": slot}))
+
+    @staticmethod
+    def _flag_error(ds: Dataset, exc: Exception) -> Dataset:
+        meta = dict(ds.meta)
+        meta["provider_error"] = str(exc)
+        meta["warnings"] = list(meta.get("warnings", [])) + [f"Live refresh failed ({exc}). Showing previously saved data."]
+        return Dataset(ds.series, meta)
+
+    def _fetch_and_store(self) -> Dataset:
+        if config.OFFLINE:
+            raise DataUnavailable("Offline mode (GOLD_OFFLINE=1): live data requests are disabled.")
+        result = self._fetcher()
+        now = time.time()
+        meta = {
+            "source_kind": "provider",
+            "source": "Yahoo Finance chart API",
+            "symbol": config.SYMBOL,
+            "instrument": INSTRUMENT_PROVIDER,
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "fetched_at_epoch": now,
+            "partial_bar_excluded": result.dropped_partial_bar,
+            "in_progress": result.in_progress,
+            "warnings": result.warnings
+            + (["The in-progress trading session was excluded; the latest value is the last completed daily close."]
+               if result.dropped_partial_bar else []),
+        }
+        return self._save("provider", result.series, meta)
 
     # -- public API ---------------------------------------------------------
     def get(self, force_refresh: bool = False) -> Dataset:
+        """The active dataset. ``force_refresh`` re-fetches provider data (and, if an upload is active, switches back to
+        provider data only when the fetch succeeds)."""
         with self._lock:
-            cached = self._load()
-            now = time.time()
-            if cached and not force_refresh:
-                kind = cached.meta.get("source_kind")
-                age = now - cached.meta.get("fetched_at_epoch", 0)
-                if kind == "upload" or (age < config.CACHE_TTL_SECONDS and not config.OFFLINE):
+            upload = self._load("upload") if self._active() == "upload" else None
+            if upload is not None and not force_refresh:
+                return upload
+            cached = self._load("provider")
+            if upload is None and cached and not force_refresh:
+                age = time.time() - cached.meta.get("fetched_at_epoch", 0)
+                if age < config.CACHE_TTL_SECONDS and not config.OFFLINE:
                     return cached
             try:
-                if config.OFFLINE:
-                    raise DataUnavailable("Offline mode (GOLD_OFFLINE=1): live data requests are disabled.")
-                result = self._fetcher()
+                ds = self._fetch_and_store()
             except DataUnavailable as exc:
-                if cached:
-                    meta = dict(cached.meta)
-                    meta["provider_error"] = str(exc)
-                    meta["warnings"] = list(meta.get("warnings", [])) + [
-                        f"Live refresh failed ({exc}). Showing previously saved data."
-                    ]
-                    return Dataset(cached.series, meta)
-                raise DataUnavailable(
-                    f"{exc} No cached data exists. Upload a CSV with Date and Close columns to continue."
-                ) from exc
-            meta = {
-                "source_kind": "provider",
-                "source": "Yahoo Finance chart API",
-                "symbol": config.SYMBOL,
-                "instrument": INSTRUMENT_PROVIDER,
-                "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "fetched_at_epoch": now,
-                "partial_bar_excluded": result.dropped_partial_bar,
-                "in_progress": result.in_progress,
-                "warnings": result.warnings
-                + (["The in-progress trading session was excluded; the latest value is the last completed daily close."]
-                   if result.dropped_partial_bar else []),
-            }
-            return self._save(result.series, meta)
+                retained = upload or cached
+                if retained is not None:
+                    return self._flag_error(retained, exc)
+                raise DataUnavailable(f"{exc} No cached data exists. Upload a CSV with Date and Close columns to continue.") from exc
+            self._set_active("provider")
+            return ds
+
+    def use_provider(self) -> Dataset:
+        """Switch from an uploaded file back to provider data: live if reachable, otherwise the saved provider copy."""
+        with self._lock:
+            try:
+                ds = self._fetch_and_store()
+            except DataUnavailable as exc:
+                cached = self._load("provider")
+                if cached is None:
+                    raise DataUnavailable(f"{exc} No saved provider data exists, so the uploaded data stays active.") from exc
+                self._set_active("provider")
+                return self._flag_error(cached, exc)
+            self._set_active("provider")
+            return ds
 
     def save_upload(self, raw: bytes, filename: str) -> Dataset:
-        series, warnings = parse_csv_bytes(raw)
+        series, warnings = parse_csv_bytes(raw)  # raises ValidationError before anything is written
         safe_name = re.sub(r"[^A-Za-z0-9._ -]", "_", filename or "upload.csv")[:80]
         meta = {
             "source_kind": "upload",
@@ -326,4 +381,6 @@ class DataStore:
             "warnings": warnings,
         }
         with self._lock:
-            return self._save(series, meta)
+            ds = self._save("upload", series, meta)
+            self._set_active("upload")
+            return ds

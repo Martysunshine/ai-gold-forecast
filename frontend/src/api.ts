@@ -19,8 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let code = "http_" + res.status;
     let message = `Request failed (${res.status}).`;
     try {
-      const body = await res.json();
-      const d = body?.detail;
+      const d = (await res.json())?.detail;
       if (d && typeof d === "object") { code = d.code ?? code; message = d.message ?? message; }
       else if (typeof d === "string") message = d;
     } catch { /* non-JSON error body */ }
@@ -32,6 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   prices: () => request<PricePayload>("/api/prices"),
   refresh: () => request<PricePayload>("/api/prices/refresh", { method: "POST" }),
+  useProvider: () => request<PricePayload>("/api/prices/use-provider", { method: "POST" }),
   upload: (file: File) => {
     const body = new FormData();
     body.append("file", file);
@@ -39,5 +39,5 @@ export const api = {
   },
   predict: (h: Horizon) => request<Prediction>(`/api/predict?horizon=${h}`),
   news: (refresh = false) => request<NewsPayload>(`/api/news${refresh ? "?refresh=true" : ""}`),
-  downloadUrl: (h: Horizon) => `/api/predict/download?horizon=${h}`,
+  downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,
 };

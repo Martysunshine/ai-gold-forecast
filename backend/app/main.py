@@ -1,4 +1,4 @@
-"""FastAPI application: prices, forecast, news, CSV upload and forecast download."""
+"""FastAPI application: prices, forecasts, news, CSV upload and forecast export."""
 from __future__ import annotations
 
 import csv
@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -17,7 +18,7 @@ from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
 
-app = FastAPI(title="Gold Outlook API", version="0.1.0")
+app = FastAPI(title="Gold Outlook API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 store = DataStore()
@@ -37,6 +38,12 @@ def _dataset(refresh: bool = False) -> Dataset:
         raise _err(503, "no_data", str(exc)) from exc
 
 
+def realised_vol_pct(series, window: int = 20) -> float:
+    """Annualised close-to-close volatility (percent) over the last ``window`` daily log returns."""
+    r = np.diff(np.log(series.to_numpy(dtype=float)))[-window:]
+    return float(np.std(r, ddof=1) * np.sqrt(252) * 100)
+
+
 def price_payload(ds: Dataset, today=None) -> dict:
     s = ds.series
     today = today or datetime.now(timezone.utc).date()
@@ -44,29 +51,25 @@ def price_payload(ds: Dataset, today=None) -> dict:
     prev_date, prev = s.index[-2], float(s.iloc[-2])
     age = (today - last_date.date()).days
     stale = age > 4  # allows a normal weekend plus one missing session
-    age_min = (datetime.now(timezone.utc).timestamp() - ds.meta.get("fetched_at_epoch", 0)) / 60
+    fetched_epoch = ds.meta.get("fetched_at_epoch", 0)
+    age_min = max(0.0, (datetime.now(timezone.utc).timestamp() - fetched_epoch) / 60)
     kind = ds.meta.get("source_kind")
     if kind == "upload":
         status = {"mode": "upload", "label": "Uploaded CSV"}
     elif ds.meta.get("provider_error"):
-        status = {"mode": "cached", "label": "Cached data (live refresh failed)"}
+        status = {"mode": "cached", "label": "Cached (live refresh failed)"}
     elif age_min <= config.CACHE_TTL_SECONDS / 60 + 1:
-        status = {"mode": "live", "label": "Live from Yahoo Finance"}
+        status = {"mode": "live", "label": "Live"}
     else:
-        status = {"mode": "cached", "label": "Cached data"}
-    freshness = {
-        "latest_date": last_date.date().isoformat(),
-        "age_days": age,
-        "status": "stale" if stale else "fresh",
-        "message": (f"Latest observation is {age} days old - the data source may be out of date." if stale
-                    else f"Latest observation: {last_date.date().isoformat()}" + (" (today)" if age == 0 else f" ({age} day{'s' if age != 1 else ''} ago)")),
-    }
+        status = {"mode": "cached", "label": "Cached"}
     return {
+        "data_key": ds.key,
         "source": ds.meta.get("source"),
-        "source_kind": ds.meta.get("source_kind"),
+        "source_kind": kind,
         "symbol": ds.meta.get("symbol"),
         "instrument": ds.meta.get("instrument"),
         "fetched_at": ds.meta.get("fetched_at"),
+        "age_minutes": round(age_min, 1),
         "warnings": ds.meta.get("warnings", []),
         "provider_error": ds.meta.get("provider_error"),
         "status": status,
@@ -76,7 +79,13 @@ def price_payload(ds: Dataset, today=None) -> dict:
             "note": ("The latest value is the last completed daily close. The session still in progress is excluded from the model."
                      if ds.meta.get("partial_bar_excluded") else "The latest value is the last daily close in the data."),
         },
-        "freshness": freshness,
+        "freshness": {
+            "latest_date": last_date.date().isoformat(),
+            "age_days": age,
+            "status": "stale" if stale else "fresh",
+            "message": (f"Latest observation is {age} days old - the data source may be out of date." if stale
+                        else f"Latest observation: {last_date.date().isoformat()}"),
+        },
         "latest": {
             "date": last_date.date().isoformat(),
             "close": last,
@@ -85,6 +94,7 @@ def price_payload(ds: Dataset, today=None) -> dict:
             "change": last - prev,
             "change_pct": (last / prev - 1) * 100,
         },
+        "stats": {"realised_vol_20d_annualised_pct": realised_vol_pct(s)},
         "count": int(len(s)),
         "first_date": s.index[0].date().isoformat(),
         "prices": [{"date": d.date().isoformat(), "close": round(float(v), 2)} for d, v in s.items()],
@@ -92,25 +102,26 @@ def price_payload(ds: Dataset, today=None) -> dict:
 
 
 def _predict_for(ds: Dataset, horizon: int) -> dict:
-    key = f"{ds.fingerprint}|{horizon}"
+    cache_key = f"{ds.key}|{horizon}"
     with _forecast_lock:
-        cached = _forecast_cache.get(key)
-        if cached:
-            return cached
+        hit = _forecast_cache.get(cache_key)
+        if hit:
+            return {**hit, "served_from_cache": True}
         try:
             result = run_prediction(ds.series, horizon)
         except ModelError as exc:
             raise _err(422, "insufficient_history", str(exc)) from exc
+        result["data_key"] = ds.key
         result["data"] = {
             "source": ds.meta.get("source"),
             "source_kind": ds.meta.get("source_kind"),
             "instrument": ds.meta.get("instrument"),
             "latest_date": ds.series.index[-1].date().isoformat(),
         }
-        for k in [k for k in _forecast_cache if not k.startswith(ds.fingerprint + "|")]:
-            del _forecast_cache[k]  # keep only the current dataset's predictions
-        _forecast_cache[key] = result
-        return result
+        for k in [k for k in _forecast_cache if not k.startswith(ds.key + "|")]:
+            del _forecast_cache[k]  # keep only the current dataset's results
+        _forecast_cache[cache_key] = result
+        return {**result, "served_from_cache": False}
 
 
 def _horizon(h: int) -> int:
@@ -134,6 +145,14 @@ def refresh_prices():
     return price_payload(_dataset(True))
 
 
+@app.post("/api/prices/use-provider")
+def use_provider():
+    try:
+        return price_payload(store.use_provider())
+    except DataUnavailable as exc:
+        raise _err(503, "no_provider_data", str(exc)) from exc
+
+
 @app.post("/api/prices/upload")
 async def upload_prices(file: UploadFile = File(...)):
     raw = await file.read(config.MAX_UPLOAD_BYTES + 1)
@@ -149,22 +168,34 @@ def predict(horizon: int = 5):
     return _predict_for(_dataset(), _horizon(horizon))
 
 
-@app.get("/api/predict/download")
-def download_prediction(horizon: int = 5):
-    ds = _dataset()
-    r = _predict_for(ds, _horizon(horizon))
+EXPORT_COLUMNS = ["horizon_sessions", "forecast_origin_date", "target_session_date", "origin_close_usd", "model", "forecast_price_usd",
+                  "projected_change_pct", "target_range_low_usd", "target_range_high_usd", "range_nominal_level",
+                  "range_observed_test_coverage_pct", "test_period_start", "test_period_end", "test_n", "test_mae_model_usd",
+                  "test_mae_unchanged_usd", "verdict", "instrument", "source", "data_key", "generated_at"]
+
+
+def export_row(r: dict, instrument_name: str, source: str) -> list:
+    """One CSV row. Numbers use the same precision the interface displays (2 decimals)."""
     f, t = r["forecast"], r["test"]
+    i = f["interval"]
+    return [r["horizon"], r["base_date"], r["target_date"], f"{r['base_price']:.2f}", f["model_label"], f"{f['price']:.2f}",
+            f"{f['change_pct']:.2f}", f"{i['low']:.2f}", f"{i['high']:.2f}", i["level"], f"{i['observed_coverage_pct']:.0f}",
+            t["period"]["start"], t["period"]["end"], t["n"], f"{t['methods'][f['model']]['mae']:.2f}", f"{t['methods']['unchanged']['mae']:.2f}",
+            t["verdict"], instrument_name, source, r["data_key"], r["generated_at"]]
+
+
+@app.get("/api/predict/download")
+def download_prediction(horizon: int = 5, key: str | None = None):
+    ds = _dataset()
+    if key is not None and key != ds.key:
+        raise _err(409, "stale_data", "The active dataset has changed since this forecast was run. Run the forecast again before exporting.")
+    r = _predict_for(ds, _horizon(horizon))
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["horizon_sessions", "base_date", "target_date_approx", "base_price_usd", "model", "predicted_price_usd", "expected_change_pct",
-                "range_low_usd", "range_high_usd", "range_nominal_level", "range_observed_coverage_on_test_pct",
-                "test_period_start", "test_period_end", "test_n", "test_mae_default_usd", "test_mae_unchanged_usd", "verdict", "instrument", "source", "generated_at"])
-    w.writerow([r["horizon"], r["base_date"], r["target_date"], round(r["base_price"], 2), f["model_label"], round(f["price"], 2), round(f["change_pct"], 3),
-                round(f["interval"]["low"], 2), round(f["interval"]["high"], 2), f["interval"]["level"], round(f["interval"]["observed_coverage_pct"], 1),
-                t["period"]["start"], t["period"]["end"], t["n"], round(t["methods"][f["model"]]["mae"], 2), round(t["methods"]["unchanged"]["mae"], 2), t["verdict"],
-                (ds.meta.get("instrument") or {}).get("name", ""), ds.meta.get("source", ""), r["generated_at"]])
+    w.writerow(EXPORT_COLUMNS)
+    w.writerow(export_row(r, (ds.meta.get("instrument") or {}).get("name", ""), ds.meta.get("source", "")))
     return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="gold-prediction-{r["horizon"]}d-{r["base_date"]}.csv"'})
+                    headers={"Content-Disposition": f'attachment; filename="gold-forecast-{r["horizon"]}-sessions-{r["base_date"]}.csv"'})
 
 
 @app.get("/api/news")

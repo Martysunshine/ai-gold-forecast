@@ -1,0 +1,7 @@
+{
+  "name": "gold-outlook-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser end-to-end checks (Chrome via playwright-core; no browser download).",
+  "dependencies": { "playwright-core": "1.49.1" }
+}
