@@ -114,3 +114,20 @@ def test_range_widens_when_recent_volatility_is_higher():
         i = model.run_prediction(series, 5)["forecast"]["interval"]
         widths.append((i["high"] - i["low"]) / float(series.iloc[-1]))
     assert widths[1] > 2 * widths[0]
+
+
+def test_accuracy_fields_are_consistent(series):
+    out = model.run_prediction(series, 5)
+    wt = out["test"]["within_tolerance"]
+    assert set(wt) == {"1", "2", "5"}
+    for k in ("ridge", "random_forest", "unchanged", "default"):
+        vals = [wt[t][k] for t in ("1", "2", "5")]
+        assert vals == sorted(vals) and all(0 <= v <= 100 for v in vals)  # wider tolerance can only score higher
+    assert wt["2"]["default"] == wt["2"][out["forecast"]["model"]]
+    # recompute the baseline score independently from the chart series
+    ts = pd.DataFrame(out["test_series"])
+    expected = ((ts["actual"] - ts["baseline"]).abs() / ts["actual"] <= 0.02).mean() * 100
+    assert wt["2"]["unchanged"] == pytest.approx(expected, abs=0.5)
+    tr = out["training"]
+    assert tr["closes"] == len(series) and tr["n_features"] == len(FEATURE_NAMES)
+    assert out["splits"]["train"]["n"] + out["splits"]["validation"]["n"] + out["test"]["n"] <= tr["usable_samples"]

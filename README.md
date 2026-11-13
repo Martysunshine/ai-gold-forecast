@@ -1,6 +1,6 @@
 # Gold Outlook
 
-A small gold price forecasting and **evaluation** dashboard. It loads five years of daily gold futures prices, predicts the price 1, 5 or 20 trading sessions ahead with two simple models, and tests those predictions honestly against a "price stays unchanged" baseline on a held-out period. Recent gold news is shown alongside, separate from the model.
+A small gold price forecasting and **evaluation** dashboard with a warm, glazed light design. It loads five years of daily gold futures prices, predicts the price 1, 5 or 20 trading sessions ahead with two simple models, and tests those predictions honestly against a "price stays unchanged" baseline on a held-out period. Recent gold news is shown alongside, separate from the model.
 
 ![Predicted view, desktop](docs/screenshots/02-predicted-desktop.png)
 
@@ -56,6 +56,23 @@ Google News RSS ───────► news.py ──────────�
 
 API: `GET /api/prices`, `POST /api/prices/refresh`, `POST /api/prices/upload`, `GET /api/predict?horizon=1|5|20`, `GET /api/predict/download?horizon=…`, `GET /api/news`, `GET /api/health`.
 
+## What "accuracy" means here, and how much data
+
+Trained on **1,257 daily closes** (15 Nov 2021 → 12 Nov 2026; about 1,230 usable after a 20-session warm-up) with 12 features. For 5 sessions ahead that is 734 training, 241 validation and 247 test samples. The app's **Accuracy score** panel shows two numbers, measured only on the untouched test period:
+
+- **Price accuracy**: the share of predictions whose price landed within ±1%, ±2% or ±5% of the real price. Measured on the test period for the default model vs "unchanged":
+
+  | Horizon | within ±2% (model / unchanged) | within ±5% (model / unchanged) |
+  |---|---|---|
+  | 1 session | 79% / 80% | 99% / 99% |
+  | 5 sessions | 40% / 42% | 84% / 85% |
+  | 20 sessions | 16% / 15% | 43% / 44% |
+
+  The unchanged baseline scores almost the same, because gold rarely moves more than a few percent over a few sessions. So a high score at a wide tolerance reflects calm markets rather than added information.
+- **Direction accuracy**: how often up/down was called correctly. This is about 50% (always-up scores 45–51% in the test period).
+
+An attempt to push direction accuracy up with logistic-regression and random-forest *classifiers* on the same chronological split scored 75–78% on validation at 20 sessions but **46–47% on the untouched test period**. Gold trended up through the validation window, so "up" looked right, and the pattern did not carry over. For that reason the app reports the test-period numbers and does not tune toward a target. An 80% direction score on past data would only be believable if it held up there.
+
 ## Results
 
 Measured on 13 Nov 2026 with live `GC=F` data (1,257 daily closes, 15 Nov 2021 → 12 Nov 2026). They change as data updates. The model comparison was not tuned to improve these numbers (the one change to how ranges are built is described below). MAE is mean absolute error of the predicted price in USD.
@@ -87,7 +104,7 @@ The app's verdict rule, fixed in advance: "beat the baseline" requires ≥2% low
 ## Tests and verification
 
 ```bash
-cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 45 tests
+cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 46 tests
 cd frontend && npm run build                                                                    # type-check + production build
 ```
 

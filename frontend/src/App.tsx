@@ -6,6 +6,7 @@ import { PriceCard } from "./components/PriceCard";
 import { PredictionPanel } from "./components/PredictionPanel";
 import { PriceChart } from "./components/PriceChart";
 import { TestPanel } from "./components/TestPanel";
+import { AccuracyPanel } from "./components/AccuracyPanel";
 import { NewsSection } from "./components/News";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong.");
@@ -78,7 +79,7 @@ export default function App() {
           <span className="logo" aria-hidden="true">Au</span>
           <div>
             <h1>Gold Outlook</h1>
-            <p>Gold price history, a simple forecast, and an honest test of it</p>
+            <p>Gold, forecast with clarity</p>
           </div>
         </div>
         <div className="actions">
@@ -106,6 +107,7 @@ export default function App() {
               <PredictionPanel horizon={horizon} onHorizon={setHorizon} onPredict={predict} loading={predicting} error={predictErr} prediction={prediction} />
             </div>
             <PriceChart prices={prices} prediction={prediction} />
+            {prediction && <AccuracyPanel p={prediction} />}
             {prediction && <TestPanel p={prediction} />}
           </>
         )}

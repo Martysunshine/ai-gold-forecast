@@ -135,6 +135,12 @@ def run_prediction(close: pd.Series, h: int) -> dict:
         methods[k]["vs_baseline_pct"] = float((methods[k]["mae"] / base_mae - 1) * 100)
     d_mae = methods[default]["mae"]
     advantage = d_mae <= (1 - MATERIAL_IMPROVEMENT) * base_mae
+    tol = {}
+    for t_pct in (1, 2, 5):
+        row = {k: float(np.mean(np.abs(price_of(test, test_pred[k]) - price_h[test]) / price_h[test] <= t_pct / 100) * 100) for k in ("ridge", "random_forest")}
+        row["unchanged"] = float(np.mean(np.abs(price0[test] - price_h[test]) / price_h[test] <= t_pct / 100) * 100)
+        row["default"] = row[default]
+        tol[str(t_pct)] = row
     lo_r, hi_r = test_pred[default] + q_low * vol[test], test_pred[default] + q_high * vol[test]
     coverage = float(np.mean((actual_ret >= lo_r) & (actual_ret <= hi_r)) * 100)
     width_usd = float(np.mean(price0[test] * (np.exp(hi_r) - np.exp(lo_r))))
@@ -194,9 +200,12 @@ def run_prediction(close: pd.Series, h: int) -> dict:
             "effective_n": round(n_test / h, 1),
             "methods": methods,
             "always_up_pct": float(np.mean(actual_ret > 0) * 100),
+            "within_tolerance": tol,
             "advantage": bool(advantage),
             "verdict": "Beat the unchanged baseline on the test period" if advantage else "No demonstrated advantage over the unchanged-price baseline",
         },
+        "training": {"closes": int(len(close)), "first_close": close.index[0].date().isoformat(), "last_close": close.index[-1].date().isoformat(),
+                     "usable_samples": int(n), "n_features": len(FEATURE_NAMES), "final_fit_samples": int(n)},
         "splits": {"train": span(train), "validation": span(val), "test": span(test)},
         "test_series": test_series,
         "features": [{"name": k, "label": v} for k, v in FEATURE_LABELS.items()],
