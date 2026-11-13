@@ -192,7 +192,7 @@ The app opens at **http://localhost:8742**. The first run creates `backend/.venv
 
 Optional settings are listed in [`.env.example`](.env.example).
 
-The Windows launcher was checked on Windows 11 with Python 3.12 and Node 24. `start.sh` comes from the original project, where it was tested on macOS.
+The Windows launcher was checked on Windows 11 with Python 3.12 and Node 24. `start.sh` was tested on macOS before the Windows launcher was added.
 
 ## The app
 
@@ -316,10 +316,8 @@ And what would not: **a trading rule.** A model that does not beat "price unchan
 
 ## Credits and licence
 
-AI Gold Forecast is built on [Gold Outlook](https://github.com/Prits3/gold_trading_prediction) by [Prits3](https://github.com/Prits3). The forecasting method, the evaluation and the first version of the app are that project's work, and its commits are kept in this repository's history. Added here: the name and design, the Windows launchers, the stage-by-stage Methodology tab with its live calendar check, light and dark themes, and contrast checks measured on the page.
-
 The banner, the emblems and the app mark were generated with AI image tools (GPT Image through Higgsfield).
 
-**Licence.** The work added in this repository is released under the [MIT licence](LICENSE): the design, the Windows launchers, the Methodology walk-through, the checks added here and the documentation. The code that comes from Gold Outlook remains the copyright of its author, who has not published a licence for it; to reuse those parts, ask the author. Third-party packages remain under their own licences.
+**Licence.** The work by Martin Matysek in this repository is released under the [MIT licence](LICENSE). Code written by other contributors, as recorded in the commit history, remains theirs and is covered by that licence only where they have agreed to it. Third-party packages remain under their own licences.
 
 Created by martin.matysek
