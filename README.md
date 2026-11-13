@@ -17,6 +17,8 @@
   <img src="https://img.shields.io/badge/tests-84%20backend%20%C2%B7%2068%20browser-2EA44F" alt="84 backend tests, 68 browser checks">
   <img src="https://img.shields.io/badge/mode-forecast%20only-F0B429" alt="Forecast only">
   <img src="https://img.shields.io/badge/orders-none-D73A49" alt="Places no orders">
+  <img src="https://img.shields.io/badge/status-in%20active%20development-8957E5" alt="In active development">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licence"></a>
 </p>
 
 <p align="center">
@@ -30,6 +32,9 @@
 </p>
 
 ---
+
+> [!IMPORTANT]
+> **This is an ongoing project.** It is still being developed and will keep getting updates, so the models, the screens and the results on this page will change. The [commit history](https://github.com/Martysunshine/ai-gold-forecast/commits/main) shows what changed and when.
 
 ## What it is
 
@@ -315,6 +320,6 @@ AI Gold Forecast is built on [Gold Outlook](https://github.com/Prits3/gold_tradi
 
 The banner, the emblems and the app mark were generated with AI image tools (GPT Image through Higgsfield).
 
-**No licence file is included.** The original project has not chosen a licence, so default copyright applies to its code: you may read it, but reuse and redistribution need permission. Third-party packages remain under their own licences.
+**Licence.** The work added in this repository is released under the [MIT licence](LICENSE): the design, the Windows launchers, the Methodology walk-through, the checks added here and the documentation. The code that comes from Gold Outlook remains the copyright of its author, who has not published a licence for it; to reuse those parts, ask the author. Third-party packages remain under their own licences.
 
 Created by martin.matysek
