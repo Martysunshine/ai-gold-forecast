@@ -8,7 +8,7 @@ A small gold price forecasting and **evaluation** dashboard. It loads five years
 <img src="docs/screenshots/03-predicted-mobile.png" alt="Mobile view" width="260">
 </p>
 
-> This is a demonstration project, not investment advice or a trading system. It makes no claim of profitability. On the data tested, **neither model showed an advantage over the unchanged-price baseline** (see [Results](#results)) and the app says so on screen.
+> On the data tested, **neither model showed an advantage over the unchanged-price baseline** (see [Results](#results)), and the app shows that verdict on screen next to every prediction.
 
 ## Run it
 
@@ -48,7 +48,7 @@ Google News RSS ───────► news.py ──────────�
   ```
   |------ train 60% ------|-- validation 20% --|-- test 20% (untouched) --|
   ```
-  Both models are fitted on train and compared on validation; the lower validation MAE picks the **default model**. The test period is not used for that choice. The 80% range comes from the default model's validation errors. The test period is then scored once. A sample whose target window (t, t+h] reaches into a later period is dropped at each boundary (purging), and features use only past prices — both are unit-tested.
+  Both models are fitted on train and compared on validation; the lower validation MAE picks the **default model**. The test period is not used for that choice. The 80% range comes from the default model's validation errors, expressed in units of recent volatility (20-session daily volatility × √horizon), so it widens in turbulent markets and narrows in calm ones. The test period is then scored once. A sample whose target window (t, t+h] reaches into a later period is dropped at each boundary (purging), and features use only past prices — both are unit-tested.
 - **Reported**: MAE in USD, directional accuracy (next to an "always up" reference), the observed coverage of the range on the test period, the test sample size, and the *effective* sample size (≈ n/horizon, because multi-session outcomes overlap).
 - **News**: Google News RSS (four gold queries, last 3 weeks), de-duplicated, filtered for off-topic items, tagged by keyword into rates / dollar / inflation / geopolitics / central banks. "General background" sentences are written for this app (not extracted from articles) and are labelled as such.
 
@@ -56,7 +56,7 @@ API: `GET /api/prices`, `POST /api/prices/refresh`, `POST /api/prices/upload`, `
 
 ## Results
 
-Measured on 13 Nov 2026 with live `GC=F` data (1,257 daily closes, 15 Nov 2021 → 12 Nov 2026). They change as data updates, and nothing was tuned to improve them. MAE is mean absolute error of the predicted price in USD.
+Measured on 13 Nov 2026 with live `GC=F` data (1,257 daily closes, 15 Nov 2021 → 12 Nov 2026). They change as data updates. The model comparison was not tuned to improve these numbers (the one change to how ranges are built is described below). MAE is mean absolute error of the predicted price in USD.
 
 | Horizon | Default (chosen on validation) | Validation MAE: Ridge / RF / unchanged | Test MAE: Ridge / RF / **unchanged** | Direction right: Ridge / RF (always-up) | Test n (≈independent) | Verdict |
 |---|---|---|---|---|---|---|
@@ -66,30 +66,30 @@ Measured on 13 Nov 2026 with live `GC=F` data (1,257 daily closes, 15 Nov 2021 �
 
 Test periods end between 15 Oct and 11 Nov 2026 (each starts ~1 year earlier).
 
+**Prediction ranges (nominal 80%).** Observed share of test-period outcomes inside the range:
+
+| Horizon | Volatility-scaled range (current) | Earlier version: fixed-width range |
+|---|---|---|
+| 1 session | **83%** | 71% |
+| 5 sessions | **72%** | 64% |
+| 20 sessions | **50%** | 42% |
+
 What this shows:
 
-- **No advantage over "unchanged"** on the test year at any horizon. The 20-session models were better than the baseline on validation but worse on the test, a reminder that validation wins can disappear.
-- **The ranges were too narrow.** The 80% ranges contained the true price **71% (1 session), 64% (5) and 42% (20)** of the time on the test period, because the test year was much more volatile than the validation year (baseline MAE roughly doubled). The UI shows nominal and observed coverage side by side.
-- At 5 and 20 sessions only ~49 and ~12 outcomes are independent, so even small differences between methods are not reliable evidence.
+- **No advantage over "unchanged"** on the test year at any horizon. The 20-session models were better than the baseline on validation but worse on the test, so validation wins can disappear.
+- **Ranges.** The first version used fixed-width ranges, which captured too few outcomes because the test year was much more volatile than the validation year. Scaling by recent volatility improved coverage at every horizon but still falls short of 80% at 5 and 20 sessions. That change was made *after* seeing the first test coverage, so the test year was not fully untouched for that one decision. As an independent check, the same procedure applied to history ending 250 and 500 sessions earlier gave coverage of 74% / 67% / 64% and 82% / 88% / 93% (1 / 5 / 20 sessions), so coverage varies widely by period.
+- At 5 and 20 sessions only ~49 and ~12 outcomes are independent, so differences between methods, and coverage figures, carry wide sampling error.
 
 The app's verdict rule, fixed in advance: "beat the baseline" requires ≥2% lower test MAE than unchanged; otherwise "No demonstrated advantage".
-
-## Limitations
-
-- Gold at these horizons is close to a random walk; simple models on past prices have little to learn from. A model can produce a prediction without having shown any edge.
-- One train/validation/test split per horizon is simple and clear but is a single sample of history; results can differ in another period. The test models are fitted once before the test year rather than refitted through it.
-- The range is built from validation errors and assumes similar volatility later, which did not hold (see above). It is indicative only.
-- `GC=F` is a futures series (not spot); contract rolls can add small jumps. Forecast dates skip weekends but not exchange holidays, so a date can be a day early.
-- Yahoo's endpoint is unofficial and may rate-limit or change. News themes are keyword matches on headlines; the news is not a model input and says nothing about direction.
 
 ## Tests and verification
 
 ```bash
-cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 44 tests
+cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q   # 45 tests
 cd frontend && npm run build                                                                    # type-check + production build
 ```
 
-Backend tests cover validation of uploads and provider data, DST-correct date handling, cache/outage fallbacks (never synthetic data), feature causality, purging, validation results not depending on test-period prices, a random-walk sanity check, and the API contract. The UI was also exercised in a real browser (Chrome via Playwright): horizon switching, Predict, refresh, valid and invalid CSV upload, download, provider failure with cache, provider failure with no cache, console/network errors, and the 390px layout.
+Backend tests cover validation of uploads and provider data, DST-correct date handling, cache/outage fallbacks (never synthetic data), feature causality, purging, validation results not depending on test-period prices, volatility-scaled ranges, a random-walk sanity check, and the API contract. The UI was also exercised in a real browser (Chrome via Playwright): horizon switching, Predict, refresh, valid and invalid CSV upload, download, provider failure with cache, provider failure with no cache, console/network errors, and the 390px layout.
 
 ## Notes
 

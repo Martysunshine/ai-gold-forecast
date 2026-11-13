@@ -186,3 +186,4 @@ main, .card, .grid > * { min-width: 0; }
 @media (max-width: 520px) { .perf th { white-space: normal; line-height: 1.2; vertical-align: bottom; } }
 .perf td .tag { display: block; width: fit-content; margin: 3px 0 0; }
 @media (max-width: 520px) { .perf td:first-child { min-width: 70px; } .perf { font-size: 12px; } }
+.credits { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; text-align: center; }

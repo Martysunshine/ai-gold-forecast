@@ -99,3 +99,18 @@ def test_insufficient_history_raises():
 def test_bad_horizon_raises(series):
     with pytest.raises(model.ModelError):
         model.run_prediction(series, 7)
+
+
+def test_range_widens_when_recent_volatility_is_higher():
+    """Same history, but one copy has calm final weeks and the other turbulent ones: the range must be wider in the turbulent one."""
+    base = make_series(900, seed=5, vol=0.008)
+    calm, wild = base.copy(), base.copy()
+    rng = np.random.default_rng(11)
+    for series, v in ((calm, 0.002), (wild, 0.03)):
+        shocks = rng.normal(0, v, 30)
+        series.iloc[-30:] = series.iloc[-31] * np.exp(np.cumsum(shocks))
+    widths = []
+    for series in (calm, wild):
+        i = model.run_prediction(series, 5)["forecast"]["interval"]
+        widths.append((i["high"] - i["low"]) / float(series.iloc[-1]))
+    assert widths[1] > 2 * widths[0]

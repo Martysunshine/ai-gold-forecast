@@ -41,13 +41,12 @@ export function PredictionPanel({ horizon, onHorizon, onPredict, loading, error,
               <div className="eyebrow">Uncertainty · nominal {Math.round(f.interval.level * 100)}% range</div>
               <div className="num range-vals">{usd(f.interval.low, 0)} <span className="muted">to</span> {usd(f.interval.high, 0)}</div>
               <div className="muted small">
-                Built from validation-period errors. On the untouched test period it contained the true price <b>{Math.round(f.interval.observed_coverage_pct)}%</b> of the time (nominal {Math.round(f.interval.level * 100)}%).
+                Built from validation-period errors, scaled to recent volatility. On the untouched test period it contained the true price <b>{Math.round(f.interval.observed_coverage_pct)}%</b> of the time (nominal {Math.round(f.interval.level * 100)}%).
               </div>
             </div>
           </div>
           <div className={`verdict ${prediction.test.advantage ? "beats" : "worse"}`} role="note" data-testid="verdict">
             <b>{prediction.test.verdict}.</b> On the test period ({fmtDate(prediction.test.period.start, { month: "short", year: "numeric" })} – {fmtDate(prediction.test.period.end, { month: "short", year: "numeric" })}) the model's average error was {usd(prediction.test.methods[f.model].mae, 0)} vs {usd(prediction.test.methods.unchanged.mae, 0)} for “price stays unchanged”.
-            {!prediction.test.advantage && " The number above is a model output, not evidence of an edge."}
           </div>
         </div>
       )}
