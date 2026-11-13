@@ -18,9 +18,11 @@ Requires Python 3.11+ and Node 20+.
 ./start.sh
 ```
 
-Open http://127.0.0.1:8742. The first run creates a virtualenv, installs the pinned dependencies, builds the frontend and starts the server (~1 min); later runs start immediately. Use `PORT=9000 ./start.sh` for another port.
+Your browser opens at http://localhost:8742 (keep the terminal open while using the app). The first run creates a virtualenv, installs the pinned dependencies, builds the frontend and starts the server (~1 min); later runs start immediately. Use `PORT=9000 ./start.sh` for another port.
 
-Development mode (hot reload): run `backend/.venv/bin/uvicorn app.main:app --port 8742` in `backend/` and `npm run dev` in `frontend/` (http://localhost:5173, proxies `/api`).
+Development mode (hot reload): run `.venv/bin/uvicorn app.main:app --port 8742` in `backend/` and `npm run dev` in `frontend/`, then open http://localhost:5183 (it proxies `/api` to port 8742, so the backend must be running).
+
+**Page won't load?** Use the address `./start.sh` prints (http://localhost:8742). Another project may already own a port (5173 is a common Vite default), and `./start.sh` stops with a message if its port is taken: use `PORT=9000 ./start.sh`. The terminal running `./start.sh` must stay open.
 
 ## Demo script (2 minutes)
 
