@@ -14,7 +14,7 @@ OFFLINE = os.getenv("GOLD_OFFLINE", "").lower() in {"1", "true", "yes"}  # never
 NEWS_TTL_SECONDS = int(os.getenv("GOLD_NEWS_TTL_SECONDS", str(15 * 60)))
 HTTP_TIMEOUT = float(os.getenv("GOLD_HTTP_TIMEOUT", "12"))
 USER_AGENT = os.getenv("GOLD_USER_AGENT", "Mozilla/5.0 (compatible; gold-prediction/0.1)")
-CORS_ORIGINS = [o.strip() for o in os.getenv("GOLD_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
+CORS_ORIGINS = [o.strip() for o in os.getenv("GOLD_CORS_ORIGINS", "http://localhost:5183,http://127.0.0.1:5183").split(",") if o.strip()]
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MIN_ROWS = 500  # minimum daily observations for features + validation/calibration/holdout periods

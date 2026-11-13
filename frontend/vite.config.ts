@@ -5,5 +5,6 @@ const api = process.env.GOLD_API_URL ?? "http://127.0.0.1:8742";
 
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, proxy: { "/api": api } },
+  // Dev server on its own port (5173 is commonly used by other Vite projects); strictPort fails loudly instead of silently moving.
+  server: { port: 5183, strictPort: true, proxy: { "/api": api } },
 });

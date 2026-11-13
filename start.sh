@@ -27,5 +27,14 @@ if [ ! -f frontend/dist/index.html ] || [ -n "$(find frontend/src frontend/index
   (cd frontend && npm run build --silent)
 fi
 
-echo "==> Gold Outlook running at http://127.0.0.1:$PORT  (Ctrl+C to stop)"
+URL="http://localhost:$PORT"
+echo "==> Starting Gold Outlook. Open $URL  (Ctrl+C to stop; keep this terminal open while using the app)"
+# Open the browser once the server answers (macOS/Linux; silently skipped if unavailable).
+( for _ in $(seq 1 60); do
+    if curl -s -o /dev/null "http://127.0.0.1:$PORT/api/health"; then
+      (command -v open >/dev/null && open "$URL") || (command -v xdg-open >/dev/null && xdg-open "$URL") || true
+      break
+    fi
+    sleep 1
+  done ) >/dev/null 2>&1 &
 cd backend && exec .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$PORT"
