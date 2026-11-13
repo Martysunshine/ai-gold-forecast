@@ -9,6 +9,7 @@ export function TopBar({ prices, busy, onRefresh, onUseLive, onUpload }: {
   return (
     <header className="topbar">
       <div className="brand">
+        <img className="mark" src="/mark.png" alt="" width={30} height={30} />
         <span className="wordmark">AI Gold Forecast</span>
         <span className="sym" title="COMEX gold futures, front-month continuous">GC=F / COMEX</span>
       </div>

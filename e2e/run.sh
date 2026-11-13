@@ -2,6 +2,7 @@
 # Browser end-to-end checks against the production build, served by FastAPI.
 #   ./e2e/run.sh                 # uses the Chrome installed on this machine
 #   CHROME_PATH=/path/to/chrome SHOTS=./docs/screenshots ./e2e/run.sh
+#   SHOTS=./docs/screenshots ./e2e/run.sh shots.mjs    # retake the README screenshots instead of running the checks
 # Starts three throw-away servers on ports 8743-8745: live data, offline with a seeded cache, offline with no data.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -38,4 +39,4 @@ serve 8745 GOLD_OFFLINE=1 GOLD_DATA_DIR="$TMP/empty"; wait_for 8745
 
 export LIVE=http://127.0.0.1:8743 CACHED=http://127.0.0.1:8744 EMPTY=http://127.0.0.1:8745
 export OUT="${SHOTS:-$TMP/shots}"
-(cd e2e && node run.mjs)
+(cd e2e && node "${1:-run.mjs}")

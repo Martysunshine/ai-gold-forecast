@@ -18,7 +18,7 @@ CACHE_TTL_SECONDS = int(os.getenv("GOLD_CACHE_TTL_SECONDS", str(15 * 60)))
 OFFLINE = os.getenv("GOLD_OFFLINE", "").lower() in {"1", "true", "yes"}  # never call external providers; use cache/upload only
 NEWS_TTL_SECONDS = int(os.getenv("GOLD_NEWS_TTL_SECONDS", str(15 * 60)))
 HTTP_TIMEOUT = float(os.getenv("GOLD_HTTP_TIMEOUT", "12"))
-USER_AGENT = os.getenv("GOLD_USER_AGENT", "Mozilla/5.0 (compatible; gold-prediction/0.1)")
+USER_AGENT = os.getenv("GOLD_USER_AGENT", "Mozilla/5.0 (compatible; ai-gold-forecast/0.2)")
 CORS_ORIGINS = [o.strip() for o in os.getenv("GOLD_CORS_ORIGINS", "http://localhost:5183,http://127.0.0.1:5183").split(",") if o.strip()]
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024

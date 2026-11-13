@@ -155,3 +155,21 @@ def test_target_date_matches_session_calendar(series, h):
     out = model.run_prediction(series, h)
     assert out["target_date"] == next_sessions(series.index[-1], h)[-1].date().isoformat()
     assert out["calendar"]["name"].startswith("CMEGlobex_Gold")
+
+
+def test_calendar_check_counts_the_bars_of_the_series_being_forecast(series):
+    """The calendar check shown in the app is computed from the active data, not a number written down once."""
+    from app.sessions import sessions_between, verify
+
+    check = model.run_prediction(series, 5)["calendar"]["check"]
+    v = verify(series)
+    assert check == {
+        "observed_bars": len(series),
+        "rule_sessions": v["rule_sessions"],
+        "rule_sessions_without_bar": len(v["rule_sessions_without_bar"]),
+        "bars_not_in_rule": len(v["bars_not_in_rule"]),
+    }
+    rule = sessions_between(series.index[0], series.index[-1])
+    a_rule_session = next(day for day in series.index[5:-5] if day in rule)
+    thinner = series.drop(a_rule_session)
+    assert model.run_prediction(thinner, 5)["calendar"]["check"]["rule_sessions_without_bar"] == check["rule_sessions_without_bar"] + 1
