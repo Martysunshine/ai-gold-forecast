@@ -153,10 +153,23 @@ class FetchResult:
     series: pd.Series
     warnings: list[str] = field(default_factory=list)
     dropped_partial_bar: bool = False
+    in_progress: dict | None = None  # last trade of the unfinished session (shown, never modelled)
+
+
+def _local_dates(epoch_seconds, tz: str) -> pd.DatetimeIndex:
+    """Exchange-local calendar dates. Uses the real timezone per timestamp (DST-aware), NOT a fixed offset."""
+    utc = pd.to_datetime(np.asarray(epoch_seconds, dtype="int64"), unit="s", utc=True)
+    return utc.tz_convert(tz).tz_localize(None).normalize()
 
 
 def parse_yahoo_chart(payload: dict, now: float | None = None) -> FetchResult:
-    """Convert a Yahoo Finance chart payload into a validated close series."""
+    """Convert a Yahoo Finance chart payload into a validated close series (gold)."""
+    frame, meta, dropped, in_progress = _yahoo_frame(payload, now)
+    series, warnings = validate_prices(frame)
+    return FetchResult(series=series, warnings=warnings, dropped_partial_bar=dropped, in_progress=in_progress)
+
+
+def _yahoo_frame(payload: dict, now: float | None):
     now = now if now is not None else time.time()
     chart = (payload or {}).get("chart") or {}
     if chart.get("error"):
@@ -170,26 +183,27 @@ def parse_yahoo_chart(payload: dict, now: float | None = None) -> FetchResult:
     if not stamps or len(stamps) != len(closes):
         raise DataUnavailable("Provider response was malformed.")
     meta = res.get("meta") or {}
-    offset = int(meta.get("gmtoffset") or 0)
-    idx = pd.to_datetime(np.asarray(stamps, dtype="int64") + offset, unit="s").normalize()
-    frame = pd.DataFrame({"Date": idx, "Close": closes})
-    frame = frame.dropna(subset=["Close"])
+    tz = meta.get("exchangeTimezoneName") or "UTC"
+    frame = pd.DataFrame({"Date": _local_dates(stamps, tz), "Close": closes}).dropna(subset=["Close"])
 
-    dropped = False
+    dropped, in_progress = False, None
     regular_end = (((meta.get("currentTradingPeriod") or {}).get("regular")) or {}).get("end")
     market_time = meta.get("regularMarketTime")
     if regular_end and market_time and now < regular_end and len(frame):
-        last_day = pd.to_datetime(int(market_time) + offset, unit="s").normalize()
+        last_day = _local_dates([market_time], tz)[0]
         if frame["Date"].iloc[-1] == last_day:
             frame = frame.iloc[:-1]
             dropped = True
-    series, warnings = validate_prices(frame)
-    return FetchResult(series=series, warnings=warnings, dropped_partial_bar=dropped)
+            if meta.get("regularMarketPrice") is not None:
+                in_progress = {
+                    "price": float(meta["regularMarketPrice"]),
+                    "time": pd.to_datetime(int(market_time), unit="s", utc=True).isoformat(timespec="minutes"),
+                    "session_date": last_day.date().isoformat(),
+                }
+    return frame, meta, dropped, in_progress
 
 
-def fetch_yahoo(symbol: str | None = None, history_range: str | None = None, client: httpx.Client | None = None) -> FetchResult:
-    symbol = symbol or config.SYMBOL
-    history_range = history_range or config.HISTORY_RANGE
+def _get_chart(symbol: str, history_range: str, client: httpx.Client | None) -> dict:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"range": history_range, "interval": "1d", "includePrePost": "false"}
     headers = {"User-Agent": config.USER_AGENT, "Accept": "application/json"}
@@ -200,16 +214,22 @@ def fetch_yahoo(symbol: str | None = None, history_range: str | None = None, cli
         if resp.status_code == 429:
             raise DataUnavailable("Provider is rate-limiting requests (HTTP 429).")
         resp.raise_for_status()
-        return parse_yahoo_chart(resp.json())
+        return resp.json()
     except httpx.HTTPError as exc:
         raise DataUnavailable(f"Could not reach the price provider: {exc.__class__.__name__}: {exc}") from exc
-    except ValueError as exc:  # JSON decode / validation problems
-        if isinstance(exc, ValidationError):
-            raise DataUnavailable(f"Provider data failed validation: {exc}") from exc
+    except ValueError as exc:
         raise DataUnavailable(f"Provider returned unreadable data: {exc}") from exc
     finally:
         if own:
             client.close()
+
+
+def fetch_yahoo(symbol: str | None = None, history_range: str | None = None, client: httpx.Client | None = None) -> FetchResult:
+    payload = _get_chart(symbol or config.SYMBOL, history_range or config.HISTORY_RANGE, client)
+    try:
+        return parse_yahoo_chart(payload)
+    except ValidationError as exc:
+        raise DataUnavailable(f"Provider data failed validation: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -261,9 +281,11 @@ class DataStore:
             if cached and not force_refresh:
                 kind = cached.meta.get("source_kind")
                 age = now - cached.meta.get("fetched_at_epoch", 0)
-                if kind == "upload" or age < config.CACHE_TTL_SECONDS:
+                if kind == "upload" or (age < config.CACHE_TTL_SECONDS and not config.OFFLINE):
                     return cached
             try:
+                if config.OFFLINE:
+                    raise DataUnavailable("Offline mode (GOLD_OFFLINE=1): live data requests are disabled.")
                 result = self._fetcher()
             except DataUnavailable as exc:
                 if cached:
@@ -283,6 +305,8 @@ class DataStore:
                 "instrument": INSTRUMENT_PROVIDER,
                 "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "fetched_at_epoch": now,
+                "partial_bar_excluded": result.dropped_partial_bar,
+                "in_progress": result.in_progress,
                 "warnings": result.warnings
                 + (["The in-progress trading session was excluded; the latest value is the last completed daily close."]
                    if result.dropped_partial_bar else []),

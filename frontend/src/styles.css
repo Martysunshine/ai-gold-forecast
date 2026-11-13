@@ -166,3 +166,23 @@ main, .card, .grid > * { min-width: 0; }
 .data-notes { margin: 8px 0 0; padding-left: 16px; }
 .brand > div { min-width: 0; }
 .perf th, .perf td { padding-left: 6px; padding-right: 6px; }
+.predict-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0 14px; }
+.big-btn { padding: 10px 26px; font-size: 15px; }
+.placeholder { color: var(--muted); padding: 18px 2px 6px; max-width: 520px; }
+.inline-error { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--down); background: var(--surface-2); border-radius: 8px; font-size: 13.5px; }
+.status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; border: 1px solid var(--border); border-radius: 99px; padding: 3px 10px; color: var(--text); }
+.status i { width: 8px; height: 8px; border-radius: 50%; background: var(--up); }
+.status.cached i { background: var(--warn); } .status.upload i { background: var(--scen); }
+.sw.base { border-top: 2px dotted var(--muted); }
+.h3 { font: 500 16px var(--serif); margin: 18px 0 8px; }
+.notice.neutral { border-left-color: var(--line-soft); }
+.theme-list { display: grid; gap: 14px; margin: 8px 0 12px; }
+.theme-item { background: var(--surface-2); border-radius: 10px; padding: 14px 16px; display: grid; gap: 8px; font-size: 13.5px; }
+.theme-item h3 { font: 500 16px var(--serif); color: var(--ivory); }
+.theme-item .ex { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.theme-item a { color: var(--gold-strong); }
+.kind { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; border: 1px solid var(--line-soft); border-radius: 4px; padding: 0 5px; margin-right: 6px; color: var(--muted); white-space: nowrap; }
+@media (max-width: 520px) { .perf { font-size: 12.5px; } .perf th, .perf td { padding-left: 4px; padding-right: 4px; } .perf td:first-child { white-space: normal; min-width: 76px; } }
+@media (max-width: 520px) { .perf th { white-space: normal; line-height: 1.2; vertical-align: bottom; } }
+.perf td .tag { display: block; width: fit-content; margin: 3px 0 0; }
+@media (max-width: 520px) { .perf td:first-child { min-width: 70px; } .perf { font-size: 12px; } }

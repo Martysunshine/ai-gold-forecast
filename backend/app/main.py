@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .data import DataStore, DataUnavailable, Dataset, ValidationError
-from .model import ModelError, run_forecast
+from .model import ModelError, run_prediction
 from .news import NewsService
 
 app = FastAPI(title="Gold Outlook API", version="0.1.0")
@@ -44,6 +44,16 @@ def price_payload(ds: Dataset, today=None) -> dict:
     prev_date, prev = s.index[-2], float(s.iloc[-2])
     age = (today - last_date.date()).days
     stale = age > 4  # allows a normal weekend plus one missing session
+    age_min = (datetime.now(timezone.utc).timestamp() - ds.meta.get("fetched_at_epoch", 0)) / 60
+    kind = ds.meta.get("source_kind")
+    if kind == "upload":
+        status = {"mode": "upload", "label": "Uploaded CSV"}
+    elif ds.meta.get("provider_error"):
+        status = {"mode": "cached", "label": "Cached data (live refresh failed)"}
+    elif age_min <= config.CACHE_TTL_SECONDS / 60 + 1:
+        status = {"mode": "live", "label": "Live from Yahoo Finance"}
+    else:
+        status = {"mode": "cached", "label": "Cached data"}
     freshness = {
         "latest_date": last_date.date().isoformat(),
         "age_days": age,
@@ -59,6 +69,13 @@ def price_payload(ds: Dataset, today=None) -> dict:
         "fetched_at": ds.meta.get("fetched_at"),
         "warnings": ds.meta.get("warnings", []),
         "provider_error": ds.meta.get("provider_error"),
+        "status": status,
+        "session": {
+            "latest_is_completed_session": True,
+            "in_progress": ds.meta.get("in_progress"),
+            "note": ("The latest value is the last completed daily close. The session still in progress is excluded from the model."
+                     if ds.meta.get("partial_bar_excluded") else "The latest value is the last daily close in the data."),
+        },
         "freshness": freshness,
         "latest": {
             "date": last_date.date().isoformat(),
@@ -74,13 +91,14 @@ def price_payload(ds: Dataset, today=None) -> dict:
     }
 
 
-def _forecast_for(ds: Dataset) -> dict:
+def _predict_for(ds: Dataset, horizon: int) -> dict:
+    key = f"{ds.fingerprint}|{horizon}"
     with _forecast_lock:
-        cached = _forecast_cache.get(ds.fingerprint)
+        cached = _forecast_cache.get(key)
         if cached:
             return cached
         try:
-            result = run_forecast(ds.series)
+            result = run_prediction(ds.series, horizon)
         except ModelError as exc:
             raise _err(422, "insufficient_history", str(exc)) from exc
         result["data"] = {
@@ -89,9 +107,16 @@ def _forecast_for(ds: Dataset) -> dict:
             "instrument": ds.meta.get("instrument"),
             "latest_date": ds.series.index[-1].date().isoformat(),
         }
-        _forecast_cache.clear()  # keep only the current dataset's forecast
-        _forecast_cache[ds.fingerprint] = result
+        for k in [k for k in _forecast_cache if not k.startswith(ds.fingerprint + "|")]:
+            del _forecast_cache[k]  # keep only the current dataset's predictions
+        _forecast_cache[key] = result
         return result
+
+
+def _horizon(h: int) -> int:
+    if h not in config.HORIZONS:
+        raise _err(422, "bad_horizon", f"horizon must be one of {list(config.HORIZONS)}.")
+    return h
 
 
 @app.get("/api/health")
@@ -119,28 +144,27 @@ async def upload_prices(file: UploadFile = File(...)):
     return price_payload(ds)
 
 
-@app.get("/api/forecast")
-def get_forecast():
-    return _forecast_for(_dataset())
+@app.get("/api/predict")
+def predict(horizon: int = 5):
+    return _predict_for(_dataset(), _horizon(horizon))
 
 
-@app.get("/api/forecast/download")
-def download_forecast():
+@app.get("/api/predict/download")
+def download_prediction(horizon: int = 5):
     ds = _dataset()
-    result = _forecast_for(ds)
+    r = _predict_for(ds, _horizon(horizon))
+    f, t = r["forecast"], r["test"]
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["horizon_sessions", "base_date", "target_date_approx", "base_price_usd", "forecast_price_usd", "expected_change_pct",
-                "range_low_usd", "range_high_usd", "range_level", "model_mae_usd", "baseline_mae_usd", "verdict", "instrument", "source", "generated_at"])
-    perf = {p["horizon"]: p for p in result["performance"]}
-    for f in result["forecasts"]:
-        p = perf[f["horizon"]]
-        w.writerow([f["horizon"], f["base_date"], f["target_date"], round(f["base_price"], 2), round(f["forecast_price"], 2),
-                    round(f["expected_change_pct"], 3), round(f["interval"]["low"], 2), round(f["interval"]["high"], 2), f["interval"]["level"],
-                    round(p["mae_model"], 2), round(p["mae_baseline"], 2), p["verdict_label"],
-                    (ds.meta.get("instrument") or {}).get("name", ""), ds.meta.get("source", ""), result["generated_at"]])
+    w.writerow(["horizon_sessions", "base_date", "target_date_approx", "base_price_usd", "model", "predicted_price_usd", "expected_change_pct",
+                "range_low_usd", "range_high_usd", "range_nominal_level", "range_observed_coverage_on_test_pct",
+                "test_period_start", "test_period_end", "test_n", "test_mae_default_usd", "test_mae_unchanged_usd", "verdict", "instrument", "source", "generated_at"])
+    w.writerow([r["horizon"], r["base_date"], r["target_date"], round(r["base_price"], 2), f["model_label"], round(f["price"], 2), round(f["change_pct"], 3),
+                round(f["interval"]["low"], 2), round(f["interval"]["high"], 2), f["interval"]["level"], round(f["interval"]["observed_coverage_pct"], 1),
+                t["period"]["start"], t["period"]["end"], t["n"], round(t["methods"][f["model"]]["mae"], 2), round(t["methods"]["unchanged"]["mae"], 2), t["verdict"],
+                (ds.meta.get("instrument") or {}).get("name", ""), ds.meta.get("source", ""), r["generated_at"]])
     return Response(buf.getvalue(), media_type="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="gold-forecast-{result["forecasts"][0]["base_date"]}.csv"'})
+                    headers={"Content-Disposition": f'attachment; filename="gold-prediction-{r["horizon"]}d-{r["base_date"]}.csv"'})
 
 
 @app.get("/api/news")

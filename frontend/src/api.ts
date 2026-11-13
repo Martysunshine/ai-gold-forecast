@@ -1,4 +1,4 @@
-import type { ForecastPayload, NewsPayload, PricePayload } from "./types";
+import type { Horizon, NewsPayload, Prediction, PricePayload } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -37,7 +37,7 @@ export const api = {
     body.append("file", file);
     return request<PricePayload>("/api/prices/upload", { method: "POST", body });
   },
-  forecast: () => request<ForecastPayload>("/api/forecast"),
+  predict: (h: Horizon) => request<Prediction>(`/api/predict?horizon=${h}`),
   news: (refresh = false) => request<NewsPayload>(`/api/news${refresh ? "?refresh=true" : ""}`),
-  downloadUrl: "/api/forecast/download",
+  downloadUrl: (h: Horizon) => `/api/predict/download?horizon=${h}`,
 };
