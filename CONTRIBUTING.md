@@ -40,6 +40,7 @@ The browser checks need Chrome or Edge and an internet connection. They start th
 - One change per pull request. Say what changed, why, and what you ran to check it.
 - Commit messages: a summary line of 72 characters or fewer in the imperative ("Add ...", "Fix ..."), then a body that explains the reason.
 - **No GitHub Actions, CI workflows, scheduled jobs or any `.github/` configuration** without the owner's agreement. Checks are run locally.
+- By opening a pull request you agree that your contribution is released under the [MIT licence](LICENSE).
 - After changing how the app looks, retake the screenshots: `SHOTS=./docs/screenshots ./e2e/run.sh shots.mjs` (Windows: `set SHOTS=docs\screenshots` then `e2e\run.cmd -Script shots.mjs`).
 
 ## 4. Rules that protect the results
