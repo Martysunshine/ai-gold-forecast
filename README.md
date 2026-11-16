@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/FastAPI-0.162-009688?logo=fastapi&logoColor=white" alt="FastAPI 0.162">
   <img src="https://img.shields.io/badge/scikit--learn-1.9-F7931E?logo=scikitlearn&logoColor=white" alt="scikit-learn 1.9">
   <img src="https://img.shields.io/badge/react-18-149ECA?logo=react&logoColor=white" alt="React 18">
-  <img src="https://img.shields.io/badge/tests-84%20backend%20%C2%B7%2068%20browser-2EA44F" alt="84 backend tests, 68 browser checks">
+  <img src="https://img.shields.io/badge/tests-89%20backend%20%C2%B7%2068%20browser-2EA44F" alt="89 backend tests, 68 browser checks">
   <img src="https://img.shields.io/badge/mode-forecast%20only-F0B429" alt="Forecast only">
   <img src="https://img.shields.io/badge/orders-none-D73A49" alt="Places no orders">
   <img src="https://img.shields.io/badge/status-in%20active%20development-8957E5" alt="In active development">
@@ -160,8 +160,9 @@ The parts:
 | Features | [`backend/app/features.py`](backend/app/features.py) | 12 numbers per day, from past prices only |
 | Models and grading | [`backend/app/model.py`](backend/app/model.py) | Split, model choice, test, forecast, range |
 | API | [`backend/app/main.py`](backend/app/main.py) | Serves the numbers and the built app on one port |
+| Export | [`backend/app/export.py`](backend/app/export.py) | Writes the forecasts as one JSON file for other programs |
 | App | [`frontend/src/`](frontend/src) | React, TypeScript and Recharts |
-| Checks | [`backend/tests/`](backend/tests), [`e2e/`](e2e) | 84 backend tests, 68 browser checks |
+| Checks | [`backend/tests/`](backend/tests), [`e2e/`](e2e) | 89 backend tests, 68 browser checks |
 
 ## Run it yourself
 
@@ -191,6 +192,21 @@ The app opens at **http://localhost:8742**. The first run creates `backend/.venv
 | Work without the internet (cached data or a CSV only) | `set GOLD_OFFLINE=1` then `start.cmd` | `GOLD_OFFLINE=1 ./start.sh` |
 
 Optional settings are listed in [`.env.example`](.env.example).
+
+### Use the forecast from another program
+
+```bash
+# from backend/      (Windows: .venv\Scripts\python -m app.export --out forecast.json)
+.venv/bin/python -m app.export --out forecast.json
+```
+
+This writes the forecast of every horizon into one JSON file, replaced in one step, and needs no server. Each forecast carries:
+
+- the **direction**, the forecast price, the change and the 80% range;
+- **`valid_until`**: the instant its target day ends in New York, where the daily bars are dated. After it the forecast is history, so an old file is never mistaken for today's;
+- **`evaluation`**: the model's own result on the test year, including `advantage`, which is `false` whenever the model did not beat "price unchanged".
+
+A program that acts on the direction should read `evaluation.advantage` first. The command exits with 1 and leaves the last file alone when there is no data or too little history; `--refresh` fetches prices even when cached ones are still fresh.
 
 The Windows launcher was checked on Windows 11 with Python 3.12 and Node 24. `start.sh` was tested on macOS before the Windows launcher was added.
 
@@ -267,7 +283,7 @@ Checks:
 
 | Check | Windows | macOS and Linux |
 | --- | --- | --- |
-| Backend, 84 tests | `backend\.venv\Scripts\python -m pip install -r backend\requirements-dev.txt` then, in `backend\`, `.venv\Scripts\python -m pytest -q` | `cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q` |
+| Backend, 89 tests | `backend\.venv\Scripts\python -m pip install -r backend\requirements-dev.txt` then, in `backend\`, `.venv\Scripts\python -m pytest -q` | `cd backend && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q` |
 | Types and build | `npm run build` in `frontend\` | `cd frontend && npm run build` |
 | Browser, 68 checks (needs Chrome or Edge, and the internet) | `e2e\run.cmd` | `./e2e/run.sh` |
 | Retake the README screenshots | `set SHOTS=docs\screenshots` then `e2e\run.cmd -Script shots.mjs` | `SHOTS=./docs/screenshots ./e2e/run.sh shots.mjs` |
@@ -279,6 +295,7 @@ Checks:
   - validation of uploads and provider data, dates across daylight saving, the session calendar
   - features use past prices only; no training label reaches into a later period; the model choice and the range do not depend on test prices
   - the three horizons agree with each other, the CSV export matches the API, and a stale export is refused (`409`)
+  - the JSON export for other programs: every horizon with the model's own test result, the instant each forecast stops applying across daylight saving, and a failed run leaving the last file alone
   - caching, provider outages, safe uploads, the return to live data
   - the Alpaca client: paging, error handling, cache, and key values never appearing in any response
 - **Browser (`e2e/`, the installed Chrome or Edge), against the production build:**
@@ -297,7 +314,13 @@ Packages are pinned in `backend/requirements.txt` (full lock in `backend/require
 
 This is a sister project of [AI Stock Trader](https://github.com/Martysunshine/ai-stock-trader), an automated trading system that has to prove an edge before it may touch real money. The two share a design and an attitude: results are published as they are.
 
-They are separate on purpose. If they are joined later, this is what would move:
+They are separate programs and meet at one point: the trader's gold practice slot, which trades a gold CFD on a demo account, reads the file that `python -m app.export` writes.
+
+- **Every gold practice trade records the forecast.** Whether the trade went with the forecast's direction or against it is stored with the trade, and the trader's ledger adds up the two groups. That is a live score of the forecast on real fills.
+- **The forecast gets a vote only when it has earned one.** While `evaluation.advantage` is `false`, which it is at every horizon today, the forecast refuses nothing. If a later model beats "price unchanged" on its test year, the gold slot starts refusing trades against it.
+- **It can only take a trade away.** The forecast never opens a trade and changes no size, stop or target. Without a current forecast the slot's own rule decides alone.
+
+If the two are joined further, this is what would move:
 
 - **The forecast code** (`data.py`, `features.py`, `model.py`, `sessions.py`) as a research module. These four files import nothing from the web server, so they can be lifted out as they are.
 - **The screens** as a gold page in the trader's console, which already uses the same design tokens.
