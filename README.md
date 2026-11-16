@@ -314,18 +314,20 @@ Packages are pinned in `backend/requirements.txt` (full lock in `backend/require
 
 This is a sister project of [AI Stock Trader](https://github.com/Martysunshine/ai-stock-trader), an automated trading system that has to prove an edge before it may touch real money. The two share a design and an attitude: results are published as they are.
 
-They are separate programs and meet at one point: the trader's gold practice slot, which trades a gold CFD on a demo account, reads the file that `python -m app.export` writes.
+They are separate programs and meet at one point: the trader's gold practice lane, which trades a gold CFD on a demo account, reads the file that `python -m app.export` writes.
 
-- **Every gold practice trade records the forecast.** Whether the trade went with the forecast's direction or against it is stored with the trade, and the trader's ledger adds up the two groups. That is a live score of the forecast on real fills.
-- **The forecast gets a vote only when it has earned one.** While `evaluation.advantage` is `false`, which it is at every horizon today, the forecast refuses nothing. If a later model beats "price unchanged" on its test year, the gold slot starts refusing trades against it.
-- **It can only take a trade away.** The forecast never opens a trade and changes no size, stop or target. Without a current forecast the slot's own rule decides alone.
+- **One practice rule trades the forecast's direction.** Once a day, on the forecast's target day, it buys the gold CFD when the one-session forecast says up and sells when it says down, with a stop, a target and an exit before the day ends.
+- **The other gold practice rule obeys it.** Its entries against the day's forecast are refused.
+- **Every forecast is scored.** The trader logs each one-session forecast and marks it right or wrong once the day has closed, and its ledger adds up what the trades made. That is a live score of the forecast on real fills.
+- **This is practice, not proof.** `evaluation.advantage` is `false` at every horizon today: on its test year the one-session forecast called half of the directions right. The demo trades show what that is worth live. They are not evidence for trading real money, and nothing that could trade real money reads the forecast.
+- **Without a forecast for the day** the forecast rule does not trade and the other rule decides alone.
 
 If the two are joined further, this is what would move:
 
 - **The forecast code** (`data.py`, `features.py`, `model.py`, `sessions.py`) as a research module. These four files import nothing from the web server, so they can be lifted out as they are.
 - **The screens** as a gold page in the trader's console, which already uses the same design tokens.
 
-And what would not: **a trading rule.** A model that does not beat "price unchanged" cannot place trades under AI Stock Trader's rules. Its own tests of gold rules found no edge either.
+And what would not: **a rule that trades real money.** A model that does not beat "price unchanged" cannot place real trades under AI Stock Trader's rules; the practice rule above runs on a demo account only. The trader's own tests of gold rules found no edge either.
 
 ## Research notes
 
