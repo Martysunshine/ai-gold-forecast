@@ -1,0 +1,43 @@
+{
+  "snapshot": {
+    "generated_at": 1000000,
+    "schedule": {
+      "enabled": true,
+      "time": "07:30",
+      "tz": "Europe/Berlin"
+    },
+    "morning": {
+      "text_fresh": "FRESH TEXT",
+      "text_stale": "STALE TEXT",
+      "valid_until": 1050000,
+      "status": "valid"
+    }
+  },
+  "cases": [
+    {
+      "now": 1000100,
+      "fresh": true,
+      "text": "FRESH TEXT"
+    },
+    {
+      "now": 1049999,
+      "fresh": true,
+      "text": "FRESH TEXT"
+    },
+    {
+      "now": 1050000,
+      "fresh": false,
+      "text": "STALE TEXT"
+    },
+    {
+      "now": 1270000,
+      "fresh": false,
+      "text": "STALE TEXT (App last synced 75 h ago.)"
+    },
+    {
+      "now": 1259300,
+      "fresh": false,
+      "text": "STALE TEXT (App last synced 72 h ago.)"
+    }
+  ]
+}

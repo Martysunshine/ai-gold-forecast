@@ -1,0 +1,17 @@
+# Run the worker on an always-on machine:   docker compose -f deploy/docker-compose.worker.yml up -d --build
+# No ports are published: the worker has no network listener, so there is no API to protect or to leave open by mistake.
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    restart: unless-stopped
+    volumes:
+      - gold-data:/data
+    env_file:
+      - path: ../.env            # optional: alert/n8n settings. Never commit this file.
+        required: false
+    environment:
+      GOLD_RUNTIME: container
+volumes:
+  gold-data:

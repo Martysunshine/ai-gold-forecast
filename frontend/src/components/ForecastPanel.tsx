@@ -1,83 +1,98 @@
-import type { Horizon, Prediction, PricePayload } from "../types";
-import { arrow, dirClass, fmtDate, fmtDateTime, pct, usd } from "../format";
+import type { ForwardPayload, TodayPayload } from "../types";
+import { arrow, dirClass, etDate, num, pct } from "../format";
 import { api } from "../api";
+import { TARGETS, cardTitle, coverageLine, inputLine, issuedAt, modelLine, perfNote, resultLine, settlementLine, targetLine, usd, type ForecastTarget, type Shown } from "../forecastText";
+import type { DetailsTab } from "./Details";
 import { Info } from "./Common";
 
-const HORIZONS: Horizon[] = [1, 5, 20];
-
-export function ForecastPanel({ prices, horizon, onHorizon, onRun, running, error, result, onOpenBacktest }: {
-  prices: PricePayload; horizon: Horizon; onHorizon: (h: Horizon) => void; onRun: () => void; running: boolean; error: string | null;
-  result: Prediction | null; onOpenBacktest: () => void;
+/**
+ * "Forecast configuration": choose a horizon, press Predict, read the stored forecast. The same record is drawn on the chart, shown here and exported.
+ * Only what the forecast IS is shown (price, change, target, range, what produced it, when it was issued and from which inputs).
+ * Experimental estimates and evaluation text live in Details.
+ */
+export function ForecastPanel({ canPredict, target, onTarget, onPredict, predicting, predictErr, shown, newerId, onDetails }: {
+  canPredict: boolean; target: ForecastTarget; onTarget: (t: ForecastTarget) => void; onPredict: () => void; predicting: boolean; predictErr: string | null;
+  shown: Shown | null; newerId: string | null; onDetails: (tab: DetailsTab) => void;
 }) {
-  const f = result?.forecast;
-  const t = result?.test;
+  const p = shown?.payload;
+  const f = p?.forecast ?? null;
+  const today = shown?.target === "next" ? (p as TodayPayload) : null;
+  const completed = p?.status === "completed";
+  const m = f ? modelLine(f) : null;
+  const cov = f ? coverageLine(f, p!.calibration) : null;
+  const baseIso = shown && shown.target !== "next" ? (p as ForwardPayload).base_date : today?.base_date;
+  const dir = f ? dirClass(f.change) : "flat";
+  const newer = !!newerId && !!f && newerId !== f.forecast_id;
+
   return (
-    <aside className="side" aria-label="Forecast configuration">
-      <h2 className="side-title">Forecast configuration</h2>
-
-      <div className="field">
-        <div className="label" id="horizon-label">Horizon <Info label="Horizon" text="How many future daily bars ahead to forecast. A separate model is trained for each horizon." /></div>
-        <div className="seg block" role="radiogroup" aria-labelledby="horizon-label">
-          {HORIZONS.map((h) => (
-            <button key={h} role="radio" aria-checked={h === horizon} className={h === horizon ? "on" : ""} onClick={() => onHorizon(h)} disabled={running} data-testid={`h-${h}`}>
-              {h}<span className="seg-unit"> {h === 1 ? "session" : "sessions"}</span>
-            </button>
-          ))}
-        </div>
+    <aside className="gx-fp" aria-label="Forecast configuration" data-testid="forecast-panel"><div data-testid="predict-bar" className="gx-fp-bar">
+      <h2 className="gx-fp-h">Forecast configuration</h2>
+      <div className="gx-fp-label">Horizon</div>
+      <div className="gx-seg gx-fp-seg" role="tablist" aria-label="Forecast horizon">
+        {TARGETS.map((t) => <button key={String(t.id)} role="tab" aria-selected={target === t.id} className={target === t.id ? "on" : ""} disabled={!canPredict} onClick={() => onTarget(t.id)} data-testid={`target-${t.id}`}>{t.label}</button>)}
       </div>
+      <button className="gx-predict gx-fp-go" onClick={onPredict} disabled={!canPredict || predicting} title={canPredict ? "Draw this stored forecast on the chart" : "Forecasts are for gold futures. Switch to Gold futures to predict."} data-testid="predict">
+        {predicting ? "Predicting…" : "Predict"}
+      </button>
+      {!canPredict && <p className="gx-micro" data-testid="futures-note">Forecasts are for <b>gold futures</b>, the instrument the models are trained and measured on. They have not been evaluated for spot gold, so they are not drawn on the spot chart.</p>}
+      {predictErr && <p className="gx-micro down" role="alert" data-testid="predict-error">{predictErr}</p>}
 
-      <button className="btn primary run" onClick={onRun} disabled={running} data-testid="run">{running ? "Running…" : "Run forecast"}</button>
-
-      <div className={`match ${result ? "ok" : running ? "run" : "none"}`} role="status" data-testid="match">
-        {running ? <>Running {horizon}-session forecast…</>
-          : result ? <><span aria-hidden="true">✓</span> Matches configuration: {result.horizon} {result.horizon === 1 ? "session" : "sessions"} · data through {fmtDate(result.base_date, { day: "2-digit", month: "short", year: "numeric" })} · run {fmtDateTime(result.generated_at)}</>
-          : <>No result for {horizon} {horizon === 1 ? "session" : "sessions"} on the current data. Run the forecast.</>}
       </div>
-
-      {error && <div className="inline-error" role="alert" data-testid="run-error">{error}</div>}
-
-      {result && f && t && !running && (
-        <div className="results" data-testid="result">
-          <dl>
-            <div className="res main">
-              <dt>Forecast price <Info label="Forecast price" text="Model prediction of the daily close at the target session, in USD per troy ounce. The origin is the latest completed close." /></dt>
-              <dd className="mono big" data-testid="pred-price">{usd(f.price)}</dd>
-            </div>
-            <div className="res">
-              <dt>Projected change <Info label="Projected change" text={`Forecast price relative to the origin close of ${usd(result.base_price)}. A model output, not a measured edge.`} /></dt>
-              <dd className={`mono ${dirClass(f.change_pct)}`} data-testid="pred-change"><span aria-hidden="true">{arrow(f.change_pct)}</span> {pct(f.change_pct)}</dd>
-            </div>
-            <div className="res">
-              <dt>Target session <Info label="Target session" text={`The ${result.horizon}-th daily bar after the origin, taken from the exchange calendar (${result.calendar.rule}).`} /></dt>
-              <dd className="mono" data-testid="pred-target">{fmtDate(result.target_date, { day: "2-digit", month: "short", year: "numeric" })}</dd>
-            </div>
-            <div className="res">
-              <dt>Target range <Info label="Target range" text={`Nominal ${Math.round(f.interval.level * 100)}% range. Calibrated on validation-period errors (${fmtDate(f.interval.calibrated_on.start, { month: "short", year: "numeric" })}–${fmtDate(f.interval.calibrated_on.end, { month: "short", year: "numeric" })}) scaled by recent volatility, then measured on the untouched test period, where it contained ${Math.round(f.interval.observed_coverage_pct)}% of outcomes.`} /></dt>
-              <dd className="mono" data-testid="pred-range">{usd(f.interval.low)} – {usd(f.interval.high)}</dd>
-              <div className="micro mono">nominal {Math.round(f.interval.level * 100)}% · observed {Math.round(f.interval.observed_coverage_pct)}% on test</div>
-            </div>
-            <div className="res">
-              <dt>Model <Info label="Model" text={`Chosen by lower validation MAE between Ridge regression and a Random Forest. ${result.selection.rule}`} /></dt>
-              <dd data-testid="pred-model">{f.model_label}</dd>
-            </div>
-          </dl>
-
-          <div className={`perf-note ${t.advantage ? "ok" : ""}`} data-testid="perf-note">
-            <div className="pn-title">{t.advantage ? "Beat the unchanged baseline" : "No demonstrated advantage"}</div>
-            <p>Test MAE {usd(t.methods[f.model].mae)} vs {usd(t.methods.unchanged.mae)} for unchanged price, {t.n} predictions {fmtDate(t.period.start, { month: "short", year: "numeric" })} – {fmtDate(t.period.end, { month: "short", year: "numeric" })}.</p>
-            <button className="link" onClick={onOpenBacktest} data-testid="open-backtest">Open backtest →</button>
+      {!canPredict ? null : !f || !m ? (
+        <section className="gx-fp-empty" data-testid="result-strip" data-state="none">
+          <p className="gx-muted">Choose Next settlement or a horizon, then press <b>Predict</b>. The forecast is drawn on the chart, with its reference price, target date and range.</p>
+        </section>
+      ) : (
+        <section className="gx-fp-result" data-testid="result-strip" data-state={completed ? "completed" : "current"} data-forecast-id={f.forecast_id} data-route={today?.route ?? "forward"}>
+          <div className="gx-fp-match" data-testid="matches">✓ Matches your choice: {shown!.target === "next" ? "next settlement" : `${shown!.target} ${shown!.target === 1 ? "session" : "sessions"}`} · stored forecast, not recomputed</div>
+          <div className="gx-fp-title">
+            <b data-testid="strip-title">{cardTitle(shown!.target, f)}</b>
+            <span className={`gx-chip ${m.baseline ? "base" : ""}`} data-testid="source-chip">{m.chip}</span>
+            {completed && <span className="gx-chip warnchip" data-testid="completed-chip">Completed</span>}
+            {newer && <span className="gx-chip warnchip" data-testid="newer-chip">A newer forecast exists — press Predict</span>}
           </div>
+          <div className="gx-fp-label">Forecast price</div>
+          <div className="gx-fp-price mono" data-testid="strip-price">{usd(f.predicted)}</div>
+          <div className="gx-fp-label">Projected change</div>
+          <div className={`gx-fp-val mono ${f.little_change ? "flat" : dir}`} data-testid="strip-change">
+            {f.little_change ? "Little change" : <><span aria-hidden="true">{arrow(f.change)}</span> {pct(f.change_pct)}</>}
+            <small className="mono"> {f.change < 0 ? "−" : "+"}${num(Math.abs(f.change))}{f.little_change && <Info label="Little change" text={`Shown when the predicted move is smaller than ${num(f.little_change_threshold_pct, 2)}% (0.10% × √sessions). A display rule only, not a confidence level and not an edge.`} />}</small>
+          </div>
+          <div className="gx-fp-label">Target session</div>
+          <div className="gx-fp-val" data-testid="strip-target">{etDate(Date.parse(f.target_time), true)}<small> {targetLine(f).split(" · ").slice(1).join(" · ")}</small></div>
+          <div className="gx-fp-label">Target range</div>
+          <div className="gx-fp-val mono" data-testid="strip-range">{usd(f.low)} – {usd(f.high)}</div>
+          <div className="gx-fp-sub" data-testid="calibration">{cov!.text}{cov!.label && <em className="gx-warn" data-testid="calibration-label">{cov!.label}</em>}</div>
+          <div className="gx-fp-label">Model</div>
+          <div className="gx-fp-model" data-testid="strip-model">{m.text}</div>
+          <div className="gx-fp-label">Issued · inputs</div>
+          <div className="gx-fp-sub" data-testid="strip-ref">Issued {issuedAt(f)}. Input data: {inputLine(f, baseIso)}. Reference <b className="mono">{usd(f.reference_price)}</b>.</div>
 
-          <a className="btn export" href={api.downloadUrl(result.horizon, result.data_key)} download data-testid="download">Export forecast (CSV)</a>
-        </div>
+          {today?.route === "baseline_reference" && today.daily_pending && <p className="gx-fp-note" data-testid="strip-sentence">{today.daily_pending}</p>}
+          {completed && <p className="gx-completed" data-testid="completed-banner"><b>Completed</b> — {resultLine(p!.result)}</p>}
+
+          <div className="gx-fp-perf" data-testid="strip-perf">
+            <b>No demonstrated advantage</b>
+            <span>{perfNote(shown!.target, p!)}</span>
+            <button className="gx-link2" onClick={() => onDetails("backtest")} data-testid="details-link">Open backtest →</button>
+          </div>
+          <a className="gx-fp-export" href={api.exportForecastUrl(f.forecast_id)} download data-testid="download">Export forecast (CSV)</a>
+        </section>
       )}
 
-      {!result && !running && (
-        <div className="results idle">
-          <p className="micro">Source: {prices.source}. History {fmtDate(prices.first_date, { month: "short", year: "numeric" })} – {fmtDate(prices.latest.date, { month: "short", year: "numeric" })}, {prices.count.toLocaleString()} closes.</p>
-          <span className="btn export disabled" aria-disabled="true" data-testid="download-disabled" title="Run a forecast first">Export forecast (CSV)</span>
-        </div>
-      )}
     </aside>
+  );
+}
+
+/** Today's (or the last) finished settlement and its forecast, SEPARATE from the forecast for the next one. Pending until the official close is posted. */
+export function SettlementNote({ shown }: { shown: Shown | null }) {
+  const rec = shown?.target === "next" ? (shown.payload as TodayPayload).last_result : null;
+  if (!rec) return null;
+  const sl = settlementLine(rec);
+  return (
+    <section className="gx-settle" data-testid="settlement-record" data-status={rec.status}>
+      <span className="gx-fp-label">{sl.title}</span>
+      <p>{sl.text}</p>
+    </section>
   );
 }

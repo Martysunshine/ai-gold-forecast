@@ -39,3 +39,31 @@ export function niceAxis(lo: number, hi: number, target = 5) {
   for (let v = min; v <= max + step / 1000; v += step) ticks.push(Math.round(v * 100) / 100);
   return { domain: [min, max] as [number, number], ticks };
 }
+
+export const ET = "America/New_York";
+export const fmtEt = (epochSec: number, opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) =>
+  new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts }).format(new Date(epochSec * 1000));
+export const fmtEtDay = (epochSec: number) => fmtEt(epochSec, { weekday: "short", day: "numeric", month: "short" });
+export const fmtEtShort = (epochSec: number) => fmtEt(epochSec, { hour: "2-digit", minute: "2-digit", hour12: false });
+export const fmtIsoEt = (iso: string, opts: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts }).format(new Date(iso));
+export const fmtAgo = (sec: number | null | undefined) => (sec == null ? "—" : sec < 90 ? `${Math.round(sec)}s ago` : sec < 5400 ? `${Math.round(sec / 60)} min ago` : sec < 172800 ? `${Math.round(sec / 3600)} h ago` : `${Math.round(sec / 86400)} d ago`);
+
+/** New York and Berlin wall-clock for one instant. Both zones are DST-correct (they differ by 6 h except for ~3 weeks a year). */
+const BERLIN = "Europe/Berlin";
+const hm = (ms: number, tz: string) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
+const ymd = (ms: number, tz: string) => new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date(ms));
+export function zoneTimes(ms: number) {
+  const dayShift = Math.round((Date.parse(ymd(ms, BERLIN)) - Date.parse(ymd(ms, ET))) / 86400000);
+  return { ny: hm(ms, ET), berlin: hm(ms, BERLIN), dayShift };
+}
+/** "13:30 New York · 19:30 Berlin" (a day offset is added when Berlin is already on the next date). */
+export const timeBoth = (ms: number) => {
+  const z = zoneTimes(ms);
+  return `${z.ny} New York · ${z.berlin} Berlin${z.dayShift ? ` (${z.dayShift > 0 ? "+" : "−"}${Math.abs(z.dayShift)} day)` : ""}`;
+};
+/** New York calendar date. The year is included when it is not the current New York year, or when `full` is set. */
+export function etDate(ms: number, full = false) {
+  const opts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" };
+  const sameYear = new Intl.DateTimeFormat("en-GB", { timeZone: ET, year: "numeric" }).format(new Date(ms)) === new Intl.DateTimeFormat("en-GB", { timeZone: ET, year: "numeric" }).format(new Date());
+  return new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts, ...(full || !sameYear ? { year: "numeric" } : {}) }).format(new Date(ms));
+}

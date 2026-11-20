@@ -1,0 +1,652 @@
+{
+  "name": "Gold alerts (SMS + morning outlook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gold-snapshot",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "e1aeef11-81cf-565d-931e-408478e7e15e",
+      "name": "Snapshot in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "af46b63d-684b-529a-ac37-7c802b7a2cc0",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "Gold shared secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst body = $input.first().json.body || {};\nif (body.type !== 'snapshot' || !body.morning || !body.schedule) return [{ json: { ok: false, error: 'bad payload' } }];\nstoreReview(sd, body.review, now);\nsd.snapshot = { type: 'snapshot', generated_at: body.generated_at, schedule: body.schedule, levels: body.levels, morning: body.morning };\nreturn [{ json: { ok: true, stored_at: now } }];"
+      },
+      "id": "376fdc39-e93f-5ce5-b108-5610eb4d1327",
+      "name": "Store snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "86f42e68-61cf-5376-8346-6d0f128353ca",
+      "name": "Respond snapshot",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gold-alert",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "64cd81b5-2030-5da0-aa04-66e3389d248d",
+      "name": "Alert in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        160
+      ],
+      "webhookId": "03c9fed5-0ae7-5e04-a66e-2e2e51d770cd",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "Gold shared secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- EDIT ONCE after importing (this node, 'Decide morning' and 'Record receipt' share the same three values) ----\nconst CFG = { SMS_TO: '+REPLACE_WITH_YOUR_NUMBER', SMS_FROM: '+REPLACE_WITH_YOUR_TWILIO_NUMBER',\n  STATUS_URL: 'https://REPLACE.app.n8n.cloud/webhook/gold-sms-status?k=REPLACE_WITH_A_LONG_RANDOM_STRING', STATUS_KEY: 'REPLACE_WITH_THE_SAME_LONG_RANDOM_STRING' };\n// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst body = $input.first().json.body || {};\nconst v = validAlert(body, now);\nif (!v.ok) return [{ json: { send: false, accepted: false, error: v.error } }];\nstoreReview(sd, body.review, now);\nreturn [{ json: { send: true, event_id: body.event_id, to: CFG.SMS_TO, from: CFG.SMS_FROM, message: body.text, statusCallback: CFG.STATUS_URL } }];"
+      },
+      "id": "9433629b-8fee-51b6-b193-9fd5ba693b0f",
+      "name": "Build alert SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c9e4b7b1-2ada-5252-8bd1-10d28e96c96a",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c9e4b7b1-2ada-5252-8bd1-10d28e96c96a",
+      "name": "Send alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $json.from }}",
+        "to": "={{ $json.to }}",
+        "message": "={{ $json.message }}",
+        "options": {
+          "statusCallback": "={{ $json.statusCallback }}"
+        }
+      },
+      "id": "99adee5c-0310-53b0-b407-d707784f8ced",
+      "name": "Send alert SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        780,
+        100
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE",
+          "name": "Twilio account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst ctx = $('Build alert SMS').first().json;\nconst r = $input.first().json || {};\nconst ok = !!r.sid;\nconst rec = { sid: r.sid || null, status: ok ? String(r.status || 'queued') : 'failed', kind: 'immediate', event_id: ctx.event_id, at: now, error: ok ? null : String((r.error && r.error.message) || r.message || 'send failed').slice(0, 200) };\npushDelivery(sd, rec);\nreturn [{ json: { accepted: ok, sid: rec.sid, status: rec.status, error: rec.error } }];"
+      },
+      "id": "f23d923e-e7b2-5d19-918f-400bbcfacb27",
+      "name": "Record alert delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "63a47c17-f655-54ef-8836-efeddb4318fa",
+      "name": "Respond alert",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gold-sms-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "acad3341-6671-5bb6-92b6-7878539938ce",
+      "name": "SMS status callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        340
+      ],
+      "webhookId": "7be1bc09-c875-59d9-8240-30cb67d1b2de"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- EDIT ONCE after importing (this node, 'Decide morning' and 'Record receipt' share the same three values) ----\nconst CFG = { SMS_TO: '+REPLACE_WITH_YOUR_NUMBER', SMS_FROM: '+REPLACE_WITH_YOUR_TWILIO_NUMBER',\n  STATUS_URL: 'https://REPLACE.app.n8n.cloud/webhook/gold-sms-status?k=REPLACE_WITH_A_LONG_RANDOM_STRING', STATUS_KEY: 'REPLACE_WITH_THE_SAME_LONG_RANDOM_STRING' };\n// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst j = $input.first().json;\nif ((j.query || {}).k !== CFG.STATUS_KEY) return [{ json: { ok: false } }];\nconst b = j.body || {};\nreturn [{ json: { ok: applyReceipt(sd, b.MessageSid, b.MessageStatus || '', now) } }];"
+      },
+      "id": "2cfd8f30-6f73-50be-aad7-bd3e8ea51444",
+      "name": "Record receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "5ca8b591-c93b-5880-bb60-70395134db17",
+      "name": "Respond receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "gold-status",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "32d46a9e-c5e9-58bc-8b42-366af395f7a5",
+      "name": "Status out",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "webhookId": "f10e7014-f92d-5bfd-b2aa-33aca3156cda",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "Gold shared secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nreturn [{ json: { ok: true, now, snapshot_generated_at: sd.snapshot ? sd.snapshot.generated_at : null, deliveries: sd.deliveries || [] } }];"
+      },
+      "id": "2fdc9d5f-cd24-5395-a8b8-7bd18c0a0fc2",
+      "name": "Build status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "bf64c54e-245e-5768-8cb3-0fe94fa940b1",
+      "name": "Respond status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "gold-review",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4246b271-6816-57cb-a733-7b760419a23b",
+      "name": "Review page",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        660
+      ],
+      "webhookId": "48c71468-5791-5ea8-9698-a672dc32ab6a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst t = (($input.first().json.query) || {}).t;\nreturn [{ json: lookupReview(sd, t, now) }];"
+      },
+      "id": "8688c7b3-58cd-5372-8ca7-a4d298c99053",
+      "name": "Find review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": "={{ $json.status }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "X-Robots-Tag",
+                "value": "noindex"
+              },
+              {
+                "name": "Referrer-Policy",
+                "value": "no-referrer"
+              }
+            ]
+          }
+        }
+      },
+      "id": "e8819587-c6b3-595b-8f50-d1223618c4ba",
+      "name": "Respond review",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "82dd8074-de73-5723-97d7-89e2cbfca8d4",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- EDIT ONCE after importing (this node, 'Decide morning' and 'Record receipt' share the same three values) ----\nconst CFG = { SMS_TO: '+REPLACE_WITH_YOUR_NUMBER', SMS_FROM: '+REPLACE_WITH_YOUR_TWILIO_NUMBER',\n  STATUS_URL: 'https://REPLACE.app.n8n.cloud/webhook/gold-sms-status?k=REPLACE_WITH_A_LONG_RANDOM_STRING', STATUS_KEY: 'REPLACE_WITH_THE_SAME_LONG_RANDOM_STRING' };\n// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst d = decideMorning(sd, now);\nif (!d.send) return [{ json: { send: false, reason: d.reason } }];\nreturn [{ json: { send: true, dateKey: d.dateKey, fresh: d.fresh, to: CFG.SMS_TO, from: CFG.SMS_FROM, message: d.text, statusCallback: CFG.STATUS_URL } }];"
+      },
+      "id": "200a30d2-80bf-5177-bb0c-069faab2da2b",
+      "name": "Decide morning",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c03275aa-5501-57aa-b92e-e88b8e675179",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c03275aa-5501-57aa-b92e-e88b8e675179",
+      "name": "Send morning?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "={{ $json.from }}",
+        "to": "={{ $json.to }}",
+        "message": "={{ $json.message }}",
+        "options": {
+          "statusCallback": "={{ $json.statusCallback }}"
+        }
+      },
+      "id": "fd13327d-d7ae-5cc3-8144-2daa8aac851b",
+      "name": "Send morning SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        780,
+        800
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "REPLACE",
+          "name": "Twilio account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure functions used inside the n8n Code nodes. Kept in one file so they can be unit-tested with plain Node\n// (n8n/test/logic.test.mjs) and inlined into the workflow by build_workflow.py. No network, no n8n globals in here.\n\nconst MORNING_WINDOW_MIN = 90;       // a morning SMS is only sent within this long after the configured time (never at noon because n8n was down)\nconst MAX_SYNC_AGE_H = 72;           // if the app has not synced for this long, say so in the SMS\nconst MAX_ATTEMPTS = 3;              // morning send attempts per local date\n\nfunction localParts(epochSec, tz) {\n  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });\n  const p = Object.fromEntries(f.formatToParts(new Date(epochSec * 1000)).map((x) => [x.type, x.value]));\n  const hour = p.hour === '24' ? 0 : Number(p.hour);\n  return { dateKey: `${p.year}-${p.month}-${p.day}`, minutes: hour * 60 + Number(p.minute) };\n}\n\n// Which text goes out at `now`, from the stored snapshot. Mirrors backend n8n_link.decide_morning exactly.\nfunction chooseMorningText(snap, now) {\n  if (!snap) return { fresh: false, text: 'GOLD morning outlook: no forecast has been received from the app yet. Nothing is being repeated as new.' };\n  const m = snap.morning || {};\n  const fresh = m.text_fresh != null && now < m.valid_until;\n  let text = fresh ? m.text_fresh : m.text_stale;\n  const syncH = (now - snap.generated_at) / 3600;\n  if (syncH > MAX_SYNC_AGE_H) text += ` (App last synced ${Math.round(syncH)} h ago.)`;\n  return { fresh, text };\n}\n\n// Decide whether to send the morning SMS at `now`. `state` is the workflow static data (mutated only by recordMorning).\nfunction decideMorning(state, now) {\n  const snap = state.snapshot || null;\n  const sch = (snap && snap.schedule) || { enabled: true, time: '07:30', tz: 'Europe/Berlin' };\n  if (!sch.enabled) return { send: false, reason: 'morning SMS is switched off' };\n  let lp;\n  try { lp = localParts(now, sch.tz); } catch (e) { return { send: false, reason: `unknown time zone ${sch.tz}` }; }\n  const [hh, mm] = String(sch.time).split(':').map(Number);\n  const target = hh * 60 + mm;\n  if (!(lp.minutes >= target && lp.minutes < target + MORNING_WINDOW_MIN)) return { send: false, reason: 'outside the morning window' };\n  if (state.lastMorningSent === lp.dateKey) return { send: false, reason: 'already sent today' };\n  const tries = (state.morningAttempts && state.morningAttempts[lp.dateKey]) || 0;\n  if (tries >= MAX_ATTEMPTS) return { send: false, reason: 'too many failed attempts today' };\n  const c = chooseMorningText(snap, now);\n  return { send: true, dateKey: lp.dateKey, fresh: c.fresh, text: c.text };\n}\n\nfunction recordMorning(state, dateKey, accepted) {\n  state.morningAttempts = state.morningAttempts || {};\n  state.morningAttempts[dateKey] = (state.morningAttempts[dateKey] || 0) + 1;\n  for (const k of Object.keys(state.morningAttempts)) if (k < dateKey) delete state.morningAttempts[k];\n  if (accepted) state.lastMorningSent = dateKey;\n}\n\nfunction storeReview(state, review, now) {\n  if (!review || !review.token || !review.html) return false;\n  state.reviews = state.reviews || {};\n  for (const [t, r] of Object.entries(state.reviews)) if (r.expires_at <= now) delete state.reviews[t];\n  state.reviews[review.token] = { html: review.html, expires_at: review.expires_at };\n  const keys = Object.keys(state.reviews);\n  if (keys.length > 60) for (const t of keys.sort((a, b) => state.reviews[a].expires_at - state.reviews[b].expires_at).slice(0, keys.length - 60)) delete state.reviews[t];\n  return true;\n}\n\nfunction lookupReview(state, token, now) {\n  const r = token && state.reviews && state.reviews[token];\n  if (!r) return { status: 403, html: page('Link invalid', 'This review link is invalid.') };\n  if (r.expires_at <= now) return { status: 410, html: page('Link expired', 'This review link has expired.') };\n  return { status: 200, html: r.html };\n}\n\nfunction page(title, msg) {\n  return `<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>${title}</title><p style=\"font:16px sans-serif;padding:24px\">${msg}</p>`;\n}\n\n// Provider \"accepted\" (queued) is NOT \"delivered\". Receipts update the same record later.\nfunction pushDelivery(state, rec) {\n  state.deliveries = state.deliveries || [];\n  state.deliveries.push(rec);\n  if (state.deliveries.length > 200) state.deliveries.splice(0, state.deliveries.length - 200);\n}\n\nfunction applyReceipt(state, sid, status, now) {\n  const rec = (state.deliveries || []).find((d) => d.sid === sid);\n  if (!rec) return false;\n  rec.status = String(status).toLowerCase();\n  rec.at = now;\n  return true;\n}\n\nfunction validAlert(body, now) {\n  if (!body || body.type !== 'alert' || typeof body.text !== 'string' || !body.text) return { ok: false, error: 'bad payload' };\n  if (body.expires_at != null && now > body.expires_at) return { ok: false, error: 'expired: not sent' };\n  return { ok: true };\n}\n\n\nconst now = Math.floor(Date.now() / 1000);\nconst sd = $getWorkflowStaticData('global');\nconst ctx = $('Decide morning').first().json;\nconst r = $input.first().json || {};\nconst ok = !!r.sid;\npushDelivery(sd, { sid: r.sid || null, status: ok ? String(r.status || 'queued') : 'failed', kind: 'morning', note: ctx.fresh ? 'fresh forecast' : 'stale or unavailable forecast, said so', at: now, error: ok ? null : String((r.error && r.error.message) || r.message || 'send failed').slice(0, 200) });\nrecordMorning(sd, ctx.dateKey, ok);\nreturn [{ json: { accepted: ok } }];"
+      },
+      "id": "b36161cd-b765-507a-b3f5-aa2321f13523",
+      "name": "Record morning delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        800
+      ]
+    }
+  ],
+  "connections": {
+    "Snapshot in": {
+      "main": [
+        [
+          {
+            "node": "Store snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store snapshot": {
+      "main": [
+        [
+          {
+            "node": "Respond snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert in": {
+      "main": [
+        [
+          {
+            "node": "Build alert SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build alert SMS": {
+      "main": [
+        [
+          {
+            "node": "Send alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send alert?": {
+      "main": [
+        [
+          {
+            "node": "Send alert SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send alert SMS": {
+      "main": [
+        [
+          {
+            "node": "Record alert delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record alert delivery": {
+      "main": [
+        [
+          {
+            "node": "Respond alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS status callback": {
+      "main": [
+        [
+          {
+            "node": "Record receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record receipt": {
+      "main": [
+        [
+          {
+            "node": "Respond receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status out": {
+      "main": [
+        [
+          {
+            "node": "Build status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build status": {
+      "main": [
+        [
+          {
+            "node": "Respond status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review page": {
+      "main": [
+        [
+          {
+            "node": "Find review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find review": {
+      "main": [
+        [
+          {
+            "node": "Respond review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Decide morning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide morning": {
+      "main": [
+        [
+          {
+            "node": "Send morning?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send morning?": {
+      "main": [
+        [
+          {
+            "node": "Send morning SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send morning SMS": {
+      "main": [
+        [
+          {
+            "node": "Record morning delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

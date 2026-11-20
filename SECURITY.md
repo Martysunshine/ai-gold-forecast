@@ -25,6 +25,6 @@ Report it privately as above. Removing a key from git history is not enough; the
 ## Using this project safely yourself
 
 - The optional GLD tab needs Alpaca keys. Use your **own paper or market-data keys**, never a live trading key.
-- Keys live in your local `.env`, which git ignores. See [CONTRIBUTING.md](CONTRIBUTING.md) section 2.
+- Keys live in your local `.env` (copy [`.env.example`](.env.example)), which git ignores.
 - If you paste a key anywhere public, revoke it at the provider straight away.
 - The forecasts are model outputs, not trading signals. The app's own test shows no advantage over assuming the price will not change.

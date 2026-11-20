@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # One command to install (first run only), build and launch the whole app.
-#   ./start.sh            -> http://127.0.0.1:8742
+#   ./start.sh            -> http://localhost:8742 (or the next free port; the URL is printed and opened)
 #   PORT=9000 ./start.sh  -> choose another port
 set -euo pipefail
 cd "$(dirname "$0")"
-PORT="${PORT:-8742}"
+busy() { (echo > "/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+if [ -n "${PORT:-}" ]; then
+  busy "$PORT" && { echo "Port $PORT is already in use. Run: PORT=<free port> ./start.sh"; exit 1; }
+else
+  PORT=8742                                   # default; if another program holds it, use the next free port
+  while busy "$PORT"; do echo "Port $PORT is in use by another program; trying $((PORT + 1))"; PORT=$((PORT + 1)); done
+fi
 
 command -v python3 >/dev/null || { echo "python3 (3.11+) is required"; exit 1; }
 command -v npm >/dev/null || { echo "Node.js 20+ and npm are required"; exit 1; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' || { echo "Python 3.11+ is required"; exit 1; }
-if (echo > "/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
-  echo "Port $PORT is already in use. Run: PORT=<free port> ./start.sh"; exit 1
-fi
 
 if [ ! -x backend/.venv/bin/uvicorn ]; then
   echo "==> Installing backend dependencies"

@@ -155,6 +155,7 @@ class FetchResult:
     warnings: list[str] = field(default_factory=list)
     dropped_partial_bar: bool = False
     in_progress: dict | None = None  # last trade of the unfinished session (shown, never modelled)
+    pending_settlement: dict | None = None  # a finished session whose official settlement the provider has not posted yet
 
 
 def _local_dates(epoch_seconds, tz: str) -> pd.DatetimeIndex:
@@ -163,14 +164,18 @@ def _local_dates(epoch_seconds, tz: str) -> pd.DatetimeIndex:
     return utc.tz_convert(tz).tz_localize(None).normalize()
 
 
-def parse_yahoo_chart(payload: dict, now: float | None = None) -> FetchResult:
-    """Convert a Yahoo Finance chart payload into a validated close series (gold)."""
-    frame, meta, dropped, in_progress = _yahoo_frame(payload, now)
+def parse_yahoo_chart(payload: dict, now: float | None = None, session_end: str | None = None) -> FetchResult:
+    """Convert a Yahoo Finance chart payload into a validated close series (gold).
+
+    ``session_end`` ("HH:MM" exchange time) switches the in-progress rule from the provider's calendar-day trading period
+    (GC=F reports 00:00-23:59, which would keep a finished session "unfinished" until midnight) to the real session end.
+    """
+    frame, meta, dropped, in_progress = _yahoo_frame(payload, now, session_end)
     series, warnings = validate_prices(frame)
     return FetchResult(series=series, warnings=warnings, dropped_partial_bar=dropped, in_progress=in_progress)
 
 
-def _yahoo_frame(payload: dict, now: float | None):
+def _yahoo_frame(payload: dict, now: float | None, session_end: str | None = None):
     now = now if now is not None else time.time()
     chart = (payload or {}).get("chart") or {}
     if chart.get("error"):
@@ -190,7 +195,18 @@ def _yahoo_frame(payload: dict, now: float | None):
     dropped, in_progress = False, None
     regular_end = (((meta.get("currentTradingPeriod") or {}).get("regular")) or {}).get("end")
     market_time = meta.get("regularMarketTime")
-    if regular_end and market_time and now < regular_end and len(frame):
+    if session_end and len(frame):
+        hh, mm = (int(x) for x in session_end.split(":"))
+        last_day = frame["Date"].iloc[-1]
+        end_epoch = (last_day.tz_localize(tz) + pd.Timedelta(hours=hh, minutes=mm)).timestamp()
+        if now < end_epoch:  # that session is still trading: its bar is not a completed observation
+            frame = frame.iloc[:-1]
+            dropped = True
+            if meta.get("regularMarketPrice") is not None and market_time:
+                in_progress = {"price": float(meta["regularMarketPrice"]),
+                               "time": pd.to_datetime(int(market_time), unit="s", utc=True).isoformat(timespec="minutes"),
+                               "session_date": last_day.date().isoformat()}
+    elif regular_end and market_time and now < regular_end and len(frame):
         last_day = _local_dates([market_time], tz)[0]
         if frame["Date"].iloc[-1] == last_day:
             frame = frame.iloc[:-1]
@@ -204,9 +220,9 @@ def _yahoo_frame(payload: dict, now: float | None):
     return frame, meta, dropped, in_progress
 
 
-def _get_chart(symbol: str, history_range: str, client: httpx.Client | None) -> dict:
+def _get_chart(symbol: str, history_range: str, client: httpx.Client | None, interval: str = "1d") -> dict:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {"range": history_range, "interval": "1d", "includePrePost": "false"}
+    params = {"range": history_range, "interval": interval, "includePrePost": "true" if interval != "1d" else "false"}
     headers = {"User-Agent": config.USER_AGENT, "Accept": "application/json"}
     own = client is None
     client = client or httpx.Client(timeout=config.HTTP_TIMEOUT, follow_redirects=True)
@@ -225,12 +241,59 @@ def _get_chart(symbol: str, history_range: str, client: httpx.Client | None) -> 
             client.close()
 
 
-def fetch_yahoo(symbol: str | None = None, history_range: str | None = None, client: httpx.Client | None = None) -> FetchResult:
-    payload = _get_chart(symbol or config.SYMBOL, history_range or config.HISTORY_RANGE, client)
+def settlement_proxies(payload: dict) -> dict:
+    """Settlement-time price per session date: the close of the 5-minute bar that ends at 13:30 America/New_York."""
+    res = (((payload or {}).get("chart") or {}).get("result") or [None])[0]
+    if not res or not res.get("timestamp"):
+        return {}
+    ts = pd.to_datetime(res["timestamp"], unit="s", utc=True).tz_convert("America/New_York")
+    close = (res["indicators"]["quote"][0] or {}).get("close") or []
+    out = {}
+    for t, c in zip(ts, close):
+        if c is not None and t.hour == 13 and t.minute == 25:
+            out[t.tz_localize(None).normalize()] = float(c)
+    return out
+
+
+def apply_settlement_check(series: pd.Series, proxies: dict, tolerance: float) -> tuple[pd.Series, dict | None]:
+    """Drop the newest bar if its close does not agree with the settlement-time price.
+
+    Before the provider posts the settlement, a finished session's daily close is just the last trade (typically $5-12 away).
+    Accepting it would record the wrong 'official close'. Agreement within ``tolerance`` means the settlement is posted.
+    """
+    if not len(series):
+        return series, None
+    day, close = series.index[-1], float(series.iloc[-1])
+    proxy = proxies.get(day)
+    if proxy is None or abs(close - proxy) <= tolerance:
+        return series, None
+    return series.iloc[:-1], {"date": day.date().isoformat(), "close_seen": round(close, 2), "settlement_price": round(proxy, 2),
+                              "reason": "The provider has not yet posted this session's official settlement; its daily bar still shows the last trade."}
+
+
+def fetch_yahoo(symbol: str | None = None, history_range: str | None = None, client: httpx.Client | None = None, now: float | None = None) -> FetchResult:
+    symbol = symbol or config.SYMBOL
+    payload = _get_chart(symbol, history_range or config.HISTORY_RANGE, client)
+    session_end = config.SESSION_END_ET or None
     try:
-        return parse_yahoo_chart(payload)
+        result = parse_yahoo_chart(payload, now=now, session_end=session_end)
     except ValidationError as exc:
         raise DataUnavailable(f"Provider data failed validation: {exc}") from exc
+    if session_end and len(result.series):
+        try:
+            proxies = settlement_proxies(_get_chart(symbol, "5d", client, interval="5m"))
+            kept, pending = apply_settlement_check(result.series, proxies, config.SETTLEMENT_TOLERANCE_USD)
+        except DataUnavailable:
+            # Cannot verify against settlement-time prices: fall back to the conservative calendar-day rule.
+            tz = "America/New_York"
+            day_end = (result.series.index[-1].tz_localize(tz) + pd.Timedelta(days=1)).timestamp()
+            kept, pending = ((result.series.iloc[:-1], {"date": result.series.index[-1].date().isoformat(), "reason": "Could not verify the settlement; waiting for the calendar day to end."})
+                             if (now if now is not None else time.time()) < day_end else (result.series, None))
+        if pending:
+            result.series = kept
+            result.pending_settlement = pending
+            result.warnings = list(result.warnings) + [f"Session {pending['date']} is over but its official settlement is not posted yet; it is excluded until it is."]
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -325,6 +388,7 @@ class DataStore:
             "fetched_at_epoch": now,
             "partial_bar_excluded": result.dropped_partial_bar,
             "in_progress": result.in_progress,
+            "pending_settlement": result.pending_settlement,
             "warnings": result.warnings
             + (["The in-progress trading session was excluded; the latest value is the last completed daily close."]
                if result.dropped_partial_bar else []),
@@ -332,6 +396,16 @@ class DataStore:
         return self._save("provider", result.series, meta)
 
     # -- public API ---------------------------------------------------------
+    def cached(self) -> Dataset | None:
+        """The active dataset as saved on disk, without contacting the provider or writing anything (None when nothing is saved).
+        For readers in another process, such as the export, while the worker keeps the saved copy fresh."""
+        with self._lock:
+            if self._active() == "upload":
+                upload = self._load("upload")
+                if upload is not None:
+                    return upload
+            return self._load("provider")
+
     def get(self, force_refresh: bool = False) -> Dataset:
         """The active dataset. ``force_refresh`` re-fetches provider data (and, if an upload is active, switches back to
         provider data only when the fetch succeeds)."""

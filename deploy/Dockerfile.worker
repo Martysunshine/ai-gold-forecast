@@ -1,0 +1,14 @@
+# Always-on worker: collection, validation, scoring, learning, forecasts, alerts and paper trading. It listens on NO port.
+# Build from the repository root:  docker build -f deploy/Dockerfile.worker -t gold-worker .
+FROM python:3.14-slim
+WORKDIR /srv
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/app ./app
+ENV GOLD_RUNTIME=container GOLD_DATA_DIR=/data GOLD_EMBEDDED_WORKER=0 PYTHONUNBUFFERED=1 PYTHONPATH=/srv
+RUN useradd --uid 10001 --no-create-home worker && mkdir /data && chown 10001 /data
+USER 10001
+VOLUME /data
+HEALTHCHECK --interval=60s --timeout=10s --start-period=90s \
+  CMD python -c "import json,time,sys; d=json.load(open('/data/worker_heartbeat.json')); sys.exit(0 if time.time()-d['at']<120 else 1)"
+CMD ["python", "-W", "ignore", "-m", "app.worker", "run"]

@@ -1,149 +1,118 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { api, ApiError } from "./api";
-import type { Horizon, NewsPayload, Prediction, PricePayload } from "./types";
-import { Banner, EmptyState, ErrorBlock, Skeleton } from "./components/Common";
-import { TopBar } from "./components/TopBar";
-import { MarketStrip } from "./components/MarketStrip";
-import { PriceChart } from "./components/PriceChart";
-import { ForecastPanel } from "./components/ForecastPanel";
-import { Backtest } from "./components/Backtest";
-import { MarketContext } from "./components/MarketContext";
-import { Methodology } from "./components/Methodology";
-import { GldComparison } from "./components/GldComparison";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
+import { usePoll } from "./hooks";
+import type { Conn, ForwardPayload, InstrumentKey, RangeKey, TodayPayload } from "./types";
+import { rangesFor, type ForecastTarget, type Shown } from "./forecastText";
+import { Header, PAGES, type PageId } from "./components/Header";
+import { PriceSummary } from "./components/PriceSummary";
+import { ChartCard } from "./components/ChartCard";
+import { ForecastPanel, SettlementNote } from "./components/ForecastPanel";
+import { AlertsPage } from "./components/AlertsPage";
+import { LearningPage } from "./components/LearningPage";
+import { PaperPage } from "./components/PaperPage";
+import { DetailsPanel, type DetailsTab } from "./components/Details";
 
+function useStored<T extends string | boolean | number>(key: string, init: T): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try { const raw = localStorage.getItem(key); return raw == null ? init : (JSON.parse(raw) as T); } catch { return init; }
+  });
+  const set = useCallback((x: T) => { setV(x); try { localStorage.setItem(key, JSON.stringify(x)); } catch { /* storage unavailable: the setting just won't persist */ } }, [key]);
+  return [v, set];
+}
+
+const pageFromHash = (): PageId => {
+  const id = window.location.hash.replace(/^#\/?/, "") as PageId;
+  return PAGES.some((p) => p.id === id) ? id : "forecast";
+};
 const msg = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong.");
-type Tab = "backtest" | "context" | "gld" | "method";
-const TABS: { id: Tab; label: string }[] = [{ id: "backtest", label: "Backtest" }, { id: "context", label: "Market Context" }, { id: "gld", label: "GLD Comparison" }, { id: "method", label: "Methodology" }];
+const fetchTarget = (t: ForecastTarget): Promise<TodayPayload | ForwardPayload> => (t === "next" ? api.today() : api.forward(t));
 
 export default function App() {
-  const [prices, setPrices] = useState<PricePayload | null>(null);
-  const [pricesErr, setPricesErr] = useState<ApiError | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<null | "refresh" | "upload">(null);
-  const [toast, setToast] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+  const [page, setPage] = useState<PageId>(pageFromHash);
+  const [instrument, setInstrument] = useStored<InstrumentKey>("gold.instrument", "futures");
+  const [range, setRange] = useStored<RangeKey>("gold.range", "1D");
+  const [mode, setMode] = useStored<"line" | "candles">("gold.mode", "candles");
+  const [target, setTarget] = useStored<ForecastTarget>("gold.target", 5);
+  const [shown, setShown] = useState<Shown | null>(null);          // the forecast on the chart: set ONLY by a Predict click
+  const [predicting, setPredicting] = useState(false);
+  const [predictErr, setPredictErr] = useState<string | null>(null);
+  const [fitToken, setFitToken] = useState(0);
+  const [detailsTab, setDetailsTab] = useState<DetailsTab>("backtest");
+  const [chartConn, setChartConn] = useState<Conn>("ok");
+  const [dataRev, setDataRev] = useState(0);
 
-  const [news, setNews] = useState<NewsPayload | null>(null);
-  const [newsErr, setNewsErr] = useState<string | null>(null);
-  const [newsLoading, setNewsLoading] = useState(true);
-
-  const [horizon, setHorizon] = useState<Horizon>(5);
-  // Results are stored under "<data_key>:<horizon>" and only ever *displayed* for the current data + selected horizon,
-  // so changing the horizon or the dataset can never show an old result as if it were current.
-  const [results, setResults] = useState<Record<string, Prediction>>({});
-  const [running, setRunning] = useState(false);
-  const [runError, setRunError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("backtest");
-  const fileRef = useRef<HTMLInputElement>(null);
-  const researchRef = useRef<HTMLElement>(null);
-
-  const result = prices ? results[`${prices.data_key}:${horizon}`] ?? null : null;
-
-  const loadNews = useCallback(async (refresh = false) => {
-    setNewsLoading(true); setNewsErr(null);
-    try { setNews(await api.news(refresh)); } catch (e) { setNewsErr(msg(e)); } finally { setNewsLoading(false); }
+  useEffect(() => {
+    const on = () => setPage(pageFromHash());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
   }, []);
+  const goPage = (p: PageId) => { window.location.hash = `/${p}`; setPage(p); };
 
-  const applyPrices = useCallback((p: PricePayload) => { setPrices(p); setPricesErr(null); setRunError(null); }, []);
+  const summary = usePoll(() => api.summary(instrument), instrument === "spot" ? 5000 : 15000, `summary:${instrument}:${dataRev}`);
+  const conn: Conn = chartConn !== "ok" ? chartConn : summary.conn;
 
-  const loadAll = useCallback(async () => {
-    setLoading(true);
-    void loadNews();
-    try { applyPrices(await api.prices()); }
-    catch (e) { setPrices(null); setPricesErr(e instanceof ApiError ? e : new ApiError("unknown", msg(e))); }
-    finally { setLoading(false); }
-  }, [applyPrices, loadNews]);
+  // While a forecast is on the chart, quietly check whether a newer one exists. It is only ever offered, never swapped in.
+  const latest = usePoll(() => fetchTarget(shown!.target), 300000, `latest:${shown?.target}:${dataRev}`, !!shown);
+  const newerId = shown && latest.data?.forecast && latest.data.forecast.forecast_id !== shown.payload.forecast?.forecast_id ? latest.data.forecast.forecast_id : null;
 
-  useEffect(() => { void loadAll(); }, [loadAll]);
+  const changeTarget = (t: ForecastTarget) => { if (t !== target) { setTarget(t); setShown(null); setPredictErr(null); } };   // a different question: the old answer leaves the chart
+  const changeInstrument = (i: InstrumentKey) => { setInstrument(i); if (i !== "futures") { setShown(null); setPredictErr(null); } };
 
-  const run = async () => {
-    if (!prices) return;
-    setRunning(true); setRunError(null);
+  const predict = async () => {
+    if (instrument !== "futures" || predicting) return;
+    setPredicting(true); setPredictErr(null);
     try {
-      const p = await api.predict(horizon);
-      setResults((m) => ({ ...m, [`${p.data_key}:${p.horizon}`]: p }));
-      if (p.data_key !== prices.data_key) {
-        // The server's data changed since this page loaded (for example the provider cache refreshed). Resync instead of mixing data.
-        applyPrices(await api.prices());
-        setToast({ kind: "info", text: "Price data was updated on the server; the display has been refreshed. Run the forecast again if needed." });
-      }
-    } catch (e) { setRunError(msg(e)); }
-    finally { setRunning(false); }
+      const p = await fetchTarget(target);
+      if (!p.forecast) { setShown(null); setPredictErr(p.message ?? "No forecast is available for this target yet."); return; }
+      // Predict fits the view to the forecast. Only if the current history range cannot show this target well is the range changed.
+      const fit = rangesFor(target, p.forecast);
+      if (!fit.allowed.includes(range)) setRange(fit.dflt as RangeKey);
+      setShown({ target, payload: p, fetchedAt: Date.now() });
+      setFitToken((n) => n + 1);
+    } catch (e) { setPredictErr(`Could not get the forecast: ${msg(e)}`); }
+    finally { setPredicting(false); }
   };
 
-  const doRefresh = async (call: () => Promise<PricePayload>, label: string) => {
-    setBusy("refresh"); setToast(null);
-    try {
-      const p = await call();
-      applyPrices(p);
-      if (p.provider_error) setToast({ kind: "error", text: `${label} failed: ${p.provider_error} Showing the last valid data (${p.status.label.toLowerCase()}).` });
-      void loadNews(true);
-    } catch (e) {
-      const err = e instanceof ApiError ? e : new ApiError("unknown", msg(e));
-      if (!prices) setPricesErr(err); else setToast({ kind: "error", text: `${label} failed: ${err.message}` });
-    } finally { setBusy(null); }
+  // "Details" opens the tab panel under the chart (on the Forecast page) and scrolls it into view.
+  const openDetails = (tab: DetailsTab = "backtest") => {
+    setDetailsTab(tab);
+    if (page !== "forecast") goPage("forecast");
+    setTimeout(() => document.getElementById("details")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
   };
-
-  const onFile = async (file?: File | null) => {
-    if (!file) return;
-    setBusy("upload"); setToast(null);
-    try { applyPrices(await api.upload(file)); setToast({ kind: "info", text: `Loaded ${file.name}. Forecasts will be computed from this file; “Use live data” switches back.` }); }
-    catch (e) { setToast({ kind: "error", text: `Upload rejected — active data unchanged. ${msg(e)}` }); }
-    finally { setBusy(null); if (fileRef.current) fileRef.current.value = ""; }
-  };
-
-  const openBacktest = () => { setTab("backtest"); researchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); };
-  const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    const i = TABS.findIndex((t) => t.id === tab);
-    const next = e.key === "ArrowRight" ? (i + 1) % TABS.length : e.key === "ArrowLeft" ? (i + TABS.length - 1) % TABS.length : -1;
-    if (next >= 0) { e.preventDefault(); setTab(TABS[next].id); document.getElementById(`tab-${TABS[next].id}`)?.focus(); }
-  };
-  const noData = !loading && !prices && pricesErr?.code === "no_data";
 
   return (
-    <div className="app">
-      <TopBar prices={prices} busy={busy} onRefresh={() => doRefresh(api.refresh, "Refresh")} onUseLive={() => doRefresh(api.useProvider, "Switch to live data")} onUpload={() => fileRef.current?.click()} />
-      <input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => onFile(e.target.files?.[0])} data-testid="file-input" />
+    <div className="gx">
+      <Header page={page} onPage={goPage} summary={summary.data} conn={conn} onDetails={() => openDetails()} />
 
-      <main>
-        {toast && <Banner kind={toast.kind} onClose={() => setToast(null)}><span data-testid="toast">{toast.text}</span></Banner>}
-        {prices?.provider_error && !toast && <Banner kind="warn"><b>Live refresh failed.</b> Showing the last valid data, last updated {Math.round(prices.age_minutes) < 90 ? `${Math.round(prices.age_minutes)} min` : `${Math.round(prices.age_minutes / 60)} h`} ago. {prices.provider_error}</Banner>}
-        {prices?.freshness.status === "stale" && <Banner kind="warn">{prices.freshness.message}</Banner>}
-
-        {loading && (
-          <div className="panel" aria-busy="true" aria-label="Loading market data"><Skeleton h={90} /><div style={{ height: 16 }} /><Skeleton h={380} /></div>
-        )}
-        {noData && <EmptyState message={pricesErr!.message} busy={busy !== null} onUpload={() => fileRef.current?.click()} onRetry={() => doRefresh(api.refresh, "Refresh")} />}
-        {!loading && pricesErr && !noData && <ErrorBlock title="Could not load prices" message={pricesErr.message} onRetry={loadAll} />}
-
-        {prices && (
-          <>
-            <MarketStrip p={prices} />
-            <section className="workspace" aria-label="Chart and forecast">
-              <div className="ws-main"><PriceChart prices={prices} result={result} /></div>
-              <ForecastPanel prices={prices} horizon={horizon} onHorizon={setHorizon} onRun={run} running={running} error={runError} result={result} onOpenBacktest={openBacktest} />
-            </section>
-          </>
-        )}
-
-        {!noData && (
-          <section className="research" ref={researchRef} aria-label="Research">
-            <div className="tabs" role="tablist" aria-label="Research sections" onKeyDown={onTabKey}>
-              {TABS.map((t) => (
-                <button key={t.id} id={`tab-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls={`panel-${t.id}`} tabIndex={tab === t.id ? 0 : -1}
-                  className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)} data-testid={`tab-${t.id}`}>{t.label}</button>
-              ))}
+      {page === "forecast" && (
+        <div className="gx-page" data-testid="page-forecast">
+          <div className="gx-seg gx-inst" role="tablist" aria-label="Instrument">
+            {(["spot", "futures"] as const).map((i) => (
+              <button key={i} role="tab" aria-selected={instrument === i} className={instrument === i ? "on" : ""} onClick={() => changeInstrument(i)} data-testid={`inst-${i}`}>
+                {i === "spot" ? "Spot gold" : "Gold futures"}
+              </button>
+            ))}
+          </div>
+          <PriceSummary s={summary.data} err={summary.error} />
+          <div className="gx-workspace">
+            <div className="gx-leftcol">
+              <ChartCard instrument={instrument} summary={summary.data} range={range} onRange={setRange} mode={mode} onMode={setMode}
+                shown={instrument === "futures" ? shown : null} onHide={() => { setShown(null); setPredictErr(null); }} fitToken={fitToken} onFit={() => setFitToken((n) => n + 1)} onConn={setChartConn} conn={conn} />
+              <SettlementNote shown={instrument === "futures" ? shown : null} />
             </div>
-            <div className="tabpanel" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-              {tab === "backtest" && <Backtest result={result} horizon={horizon} />}
-              {tab === "context" && <MarketContext news={news} loading={newsLoading} error={newsErr} onRetry={() => loadNews(true)} />}
-              {tab === "gld" && <GldComparison />}
-              {tab === "method" && prices && <Methodology prices={prices} result={result} />}
-            </div>
-          </section>
-        )}
+            <ForecastPanel canPredict={instrument === "futures"} target={target} onTarget={changeTarget} onPredict={predict} predicting={predicting} predictErr={predictErr}
+              shown={instrument === "futures" ? shown : null} newerId={newerId} onDetails={openDetails} />
+          </div>
+          <DetailsPanel shown={instrument === "futures" ? shown : null} tab={detailsTab} onTab={setDetailsTab} />
+        </div>
+      )}
+      {page === "learning" && <LearningPage />}
+      {page === "paper" && <PaperPage />}
+      {page === "alerts" && <AlertsPage onDataChanged={() => setDataRev((n) => n + 1)} />}
 
-        <footer className="credits">AI Gold Forecast · prices: Yahoo Finance (GC=F, COMEX gold futures) · headlines: Google News RSS · headlines are not a model input · forecasts are model outputs, not trading signals</footer>
-      </main>
+      <footer className="gx-footer">
+        For information only — not investment advice. Forecasts are statistical estimates; the price may differ. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts™</a>.
+      </footer>
     </div>
   );
 }
