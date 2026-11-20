@@ -76,4 +76,4 @@ cd backend
 
 ## Licence
 
-**Licence.** The work by Martin Matysek in this repository is released under the [MIT licence](LICENSE). Code written by other contributors, as recorded in the commit history, remains theirs and is covered by that licence only where they have agreed to it. Third-party packages remain under their own licences. See [SECURITY.md](SECURITY.md) for reporting a problem.
+**Licence.** The work by Martin Matysek in this repository is released under the [MIT licence](LICENSE). Code written by other contributors remains theirs and is covered by that licence only where they have agreed to it. That includes the first commits in the history, and most of the learning version added in November 2026 (the forecast ledger, the daily worker and the promotion rules), which another contributor wrote; the work done on it here is mainly the Windows support, the export for other programs and this README. Third-party packages remain under their own licences. See [SECURITY.md](SECURITY.md) for reporting a problem.
